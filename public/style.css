@@ -12,6 +12,7 @@
 }
 
 * { box-sizing: border-box; }
+html { overflow-x: hidden; }
 body {
   margin: 0 auto;
   max-width: 980px;
@@ -19,7 +20,10 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 14px/1.6 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  overflow-x: hidden;
 }
+/* 长串（mono/URL/指纹）在窄处也能换行，避免撑破布局 */
+.mono, .signal-detail, .kv-v, td, .issue span, .signal-advice { overflow-wrap: anywhere; word-break: break-word; }
 
 header h1 { margin: 0; font-size: 28px; }
 header .badge {
@@ -110,15 +114,31 @@ header .sub strong { color: var(--text); }
 .agent-grade.good { color: var(--good); }
 .agent-grade.warn { color: var(--warn); }
 .agent-grade.bad { color: var(--bad); }
-.signal-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 4px 18px; }
-.signal { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 13px; }
+/* AI Agent 信号：单列清爽布局，每项一行 + 建议独立成行 */
+.signal-list { display: flex; flex-direction: column; }
+.signal { padding: 9px 0; border-bottom: 1px solid var(--card-border); font-size: 13px; }
+.signal:last-child { border-bottom: none; }
+.signal-main { display: flex; align-items: baseline; gap: 8px; }
 .signal-icon { width: 14px; flex-shrink: 0; font-weight: 700; }
 .signal.good .signal-icon { color: var(--good); }
 .signal.warn .signal-icon { color: var(--warn); }
 .signal.bad .signal-icon { color: var(--bad); }
 .signal.dim .signal-icon { color: var(--dim); }
-.signal-label { flex-shrink: 0; }
-.signal-detail { font-size: 12px; margin-left: auto; text-align: right; font-family: var(--mono); }
+.signal-label { flex-shrink: 0; font-weight: 500; }
+.signal-detail { font-size: 12px; margin-left: auto; text-align: right; min-width: 0; }
+.signal-advice { margin: 5px 0 0 22px; padding-left: 10px; border-left: 2px solid var(--card-border); color: var(--dim); font-size: 12px; line-height: 1.55; }
+.signal.bad .signal-advice { border-left-color: rgba(248, 113, 113, 0.5); }
+.signal.warn .signal-advice { border-left-color: rgba(251, 191, 36, 0.5); }
+
+/* IP 详情：键值网格 */
+.kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px 24px; }
+.kv { display: flex; gap: 12px; align-items: baseline; padding: 4px 0; border-bottom: 1px solid var(--card-border); }
+.kv-k { width: 88px; flex-shrink: 0; color: var(--dim); font-size: 12.5px; }
+.kv-v { flex: 1; min-width: 0; }
+.kv-v .big { font-size: 16px; font-weight: 600; }
+.kv-v .good { color: var(--good); }
+.kv-v .warn { color: var(--warn); }
+.kv-v .bad { color: var(--bad); }
 
 .score-card { display: flex; gap: 24px; align-items: center; }
 .gauge {
@@ -257,9 +277,9 @@ footer .dim { font-size: 12px; }
   .gauge { width: 84px; height: 84px; font-size: 26px; border-width: 5px; }
   .agent-head { flex-wrap: wrap; gap: 12px; }
   .agent-score { font-size: 34px; }
-  .signal-list { grid-template-columns: 1fr; }
-  .signal { flex-wrap: wrap; }
+  .signal-main { flex-wrap: wrap; }
   .signal-detail { margin-left: 22px; text-align: left; flex-basis: 100%; }
+  .kv-grid { grid-template-columns: 1fr; gap: 0; }
   .bar-label { width: 96px; font-size: 12px; }
   .bar-val { width: auto; }
   table { font-size: 12px; }

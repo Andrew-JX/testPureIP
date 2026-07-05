@@ -1,6 +1,46 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+// 国家二字码 -> 国旗 emoji
+function flag(cc) {
+  if (!cc || cc.length !== 2 || !/^[a-zA-Z]{2}$/.test(cc)) return '';
+  return String.fromCodePoint(...[...cc.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+}
+
+// 轻量浏览器指纹（canvas + webgl + 环境），返回稳定短哈希。非商业 FingerprintJS，仅演示。
+function browserFingerprint() {
+  const parts = [
+    navigator.userAgent, navigator.language, (navigator.languages || []).join(','),
+    screen.width + 'x' + screen.height + 'x' + screen.colorDepth,
+    new Date().getTimezoneOffset(), navigator.hardwareConcurrency || '',
+    navigator.deviceMemory || '', navigator.platform || '',
+  ];
+  try {
+    const c = document.createElement('canvas');
+    const ctx = c.getContext('2d');
+    ctx.textBaseline = 'top';
+    ctx.font = "14px 'Arial'";
+    ctx.fillStyle = '#f60';
+    ctx.fillRect(125, 1, 62, 20);
+    ctx.fillStyle = '#069';
+    ctx.fillText('PureIP-fp😀', 2, 15);
+    parts.push(c.toDataURL());
+  } catch { /* ignore */ }
+  try {
+    const gl = document.createElement('canvas').getContext('webgl');
+    const dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    if (dbg) parts.push(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL));
+  } catch { /* ignore */ }
+  // FNV-1a 32位
+  let h = 0x811c9dc5;
+  const str = parts.join('|');
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
 async function post(url, body) {
   const res = await fetch(url, {
     method: 'POST',
@@ -35,9 +75,10 @@ function renderBasic(data) {
     if (f.mobile) flags.push('<span class="tag good">移动网络</span>');
     if (s.companyType === 'isp') flags.push('<span class="tag good">ISP</span>');
     if (s.companyType === 'hosting') flags.push('<span class="tag bad">hosting</span>');
+    const fl = s.countryCode ? flag(s.countryCode) + ' ' : '';
     return `<tr>
       <th>${esc(src)}</th>
-      <td>${esc(s.country || '')}${s.city ? ' · ' + esc(s.city) : ''}</td>
+      <td>${fl}${esc(s.country || '')}${s.region ? ' · ' + esc(s.region) : ''}${s.city ? ' · ' + esc(s.city) : ''}</td>
       <td class="mono">${esc(s.asn || '')}</td>
       <td>${esc(s.isp || s.org || '')}</td>
       <td class="mono">${esc(s.rdns || s.timezone || '')}</td>
@@ -47,6 +88,64 @@ function renderBasic(data) {
   $('basicBody').innerHTML = `<div class="table-scroll"><table>
     <tr><th>数据源</th><th>位置</th><th>ASN</th><th>ISP / 组织</th><th>rDNS / 时区</th><th>标记</th></tr>
     ${rows.join('')}</table></div>`;
+}
+
+/* ---------- IP 详情（身份证式关键字段） ---------- */
+
+// 综合各源判定 IP 属性（住宅 / 机房 / 移动 / 商业 …）
+function deriveIpType(basic) {
+  const s = basic?.sources?.['ipapi.is'] || {};
+  const com = basic?.sources?.['ip-api.com']?.flags || {};
+  const f = s.flags || {};
+  if (f.tor) return { label: 'Tor 出口', cls: 'bad' };
+  if (f.hosting || f.datacenter || com.hosting || s.companyType === 'hosting') return { label: '机房 IP', cls: 'bad' };
+  if (f.mobile || com.mobile || s.companyType === 'mobile') return { label: '移动网络 IP', cls: 'good' };
+  if (s.companyType === 'isp') return { label: '住宅 IP（家庭宽带）', cls: 'good' };
+  if (s.companyType === 'business') return { label: '商业 IP', cls: 'warn' };
+  if (s.companyType === 'education') return { label: '教育网 IP', cls: 'dim' };
+  return { label: '未知类型', cls: 'dim' };
+}
+
+function renderDetail(ip, basic, agent) {
+  const s = basic?.sources?.['ipapi.is'] || {};
+  const com = basic?.sources?.['ip-api.com'] || {};
+  const type = deriveIpType(basic);
+  const cc = s.countryCode || com.countryCode || '';
+  const loc = [flag(cc), s.country || com.country, s.region || com.region, s.city || com.city]
+    .filter(Boolean).join(' · ');
+  const asn = s.asn || com.asn || '';
+  const isp = s.isp || com.isp || com.org || '';
+  const meta = agent?.meta || {};
+
+  // 附加标记
+  const tags = [];
+  const f = s.flags || {};
+  if (f.proxy) tags.push('<span class="tag bad">代理</span>');
+  if (f.vpn) tags.push('<span class="tag warn">VPN</span>');
+  if (f.abuser) tags.push('<span class="tag bad">滥用记录</span>');
+
+  const rtc = meta.rtcLeak
+    ? `<span class="bad">${esc((meta.leakedPublic || []).join(', '))}（与出口不一致，已泄漏真实 IP！）</span>`
+    : meta.leakedPublic?.length
+      ? `<span class="warn">${esc(meta.leakedPublic.join(', '))}（与出口一致）</span>`
+      : '<span class="good">未泄漏</span>';
+
+  const rows = [
+    ['IP 地址', `<span class="mono big">${esc(ip)}</span>`],
+    ['IP 属性', `<span class="tag ${type.cls}">${esc(type.label)}</span> ${tags.join(' ')}`],
+    ['ASN', `<span class="mono">${esc(asn)}</span>${isp ? ' · ' + esc(isp) : ''}`],
+    ['AS 域名', s.asDomain ? `<span class="mono">${esc(s.asDomain)}</span>` : '<span class="dim">—</span>'],
+    ['IP 网段', s.network ? `<span class="mono">${esc(s.network)}</span>` : (s.route ? `<span class="mono">${esc(s.route)}</span>` : '<span class="dim">—</span>')],
+    ['路由前缀', s.route ? `<span class="mono">${esc(s.route)}</span>` : '<span class="dim">—</span>'],
+    ['位置', esc(loc) || '<span class="dim">—</span>'],
+    ['rDNS', com.rdns ? `<span class="mono">${esc(com.rdns)}</span>` : '<span class="dim">无</span>'],
+    ['滥用评分', s.abuserScore ? esc(s.abuserScore) : '<span class="dim">—</span>'],
+    ['浏览器指纹', `<span class="mono">${esc(meta.fingerprint || '—')}</span> <span class="dim">（本机浏览器画像）</span>`],
+    ['WebRTC 泄漏', rtc],
+  ];
+
+  $('detailBody').innerHTML = `<div class="kv-grid">${rows.map(([k, v]) =>
+    `<div class="kv"><div class="kv-k">${esc(k)}</div><div class="kv-v">${v}</div></div>`).join('')}</div>`;
 }
 
 /* ---------- 风险评分 ---------- */
@@ -255,7 +354,10 @@ async function analyzeAgent(exitIp, basic) {
     score >= 55 ? { grade: '一般', cls: 'warn' } :
     { grade: '高风险', cls: 'bad' };
 
-  return { score, verdict, signals, meta: { tz, offset, locale, langs, cnFonts, ipTz } };
+  return {
+    score, verdict, signals,
+    meta: { tz, offset, locale, langs, cnFonts, ipTz, fingerprint: browserFingerprint(), rtcLeak, leakedPublic },
+  };
 }
 
 function renderAgent(agent) {
@@ -263,11 +365,13 @@ function renderAgent(agent) {
   const rows = signals.map((s) => {
     const icon = { good: '✓', warn: '△', bad: '✗', dim: '·' }[s.level] || '·';
     const advice = (s.level === 'bad' || s.level === 'warn') && s.advice
-      ? `<div class="signal-advice">→ ${esc(s.advice)}</div>` : '';
+      ? `<div class="signal-advice">${esc(s.advice)}</div>` : '';
     return `<div class="signal ${s.level}">
-      <span class="signal-icon">${icon}</span>
-      <span class="signal-label">${esc(s.label)}</span>
-      <span class="signal-detail dim">${esc(s.detail || '')}</span>
+      <div class="signal-main">
+        <span class="signal-icon">${icon}</span>
+        <span class="signal-label">${esc(s.label)}</span>
+        ${s.detail ? `<span class="signal-detail mono dim">${esc(s.detail)}</span>` : ''}
+      </div>
       ${advice}
     </div>`;
   });
@@ -423,7 +527,7 @@ async function run(proxy) {
   $('report').classList.remove('hidden');
   $('card-verdict').classList.add('hidden');
   $('card-unlock').classList.toggle('hidden', !useProxy);
-  const stages = ['agent', 'basic', 'risk', 'dnsbl', ...(useProxy ? ['unlock'] : [])];
+  const stages = ['detail', 'agent', 'basic', 'risk', 'dnsbl', ...(useProxy ? ['unlock'] : [])];
   stages.forEach((n) => setStatus(n, 'loading'));
   $('scoreNum').textContent = '--';
   $('scoreGrade').textContent = '检测中…';
@@ -445,12 +549,17 @@ async function run(proxy) {
         .catch((e) => { setStatus('risk', 'error'); $('riskBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`; })
     );
 
-    // AI Agent 分析依赖基础信息里的地理数据
+    // AI Agent 分析依赖基础信息里的地理数据；IP 详情同时用到 basic + agent(指纹/WebRTC)
     const agentP = basicP.then(async (b) => {
       results.agent = await analyzeAgent(ip, b);
       renderAgent(results.agent);
       setStatus('agent', 'done');
-    }).catch((e) => { setStatus('agent', 'error'); $('agentBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`; });
+      renderDetail(ip, b, results.agent);
+      setStatus('detail', 'done');
+    }).catch((e) => {
+      setStatus('agent', 'error'); setStatus('detail', 'error');
+      $('agentBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`;
+    });
 
     const dnsblP = post('/api/dnsbl', { ip })
       .then((d) => { results.dnsbl = d; renderDnsbl(d); setStatus('dnsbl', 'done'); })

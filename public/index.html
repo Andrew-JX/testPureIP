@@ -48,9 +48,15 @@
       <div class="body" id="agentBody"></div>
     </section>
 
+    <section class="card" id="card-detail">
+      <h2>IP 详情 <span class="status" data-for="detail"></span></h2>
+      <p class="card-desc">这个 IP 的“身份证”：归属网段、运营商域名、住宅 / 机房属性、精确位置，以及你的浏览器指纹与 WebRTC 泄漏情况。</p>
+      <div class="body" id="detailBody"></div>
+    </section>
+
     <section class="card" id="card-basic">
-      <h2>基础信息 <span class="status" data-for="basic"></span></h2>
-      <p class="card-desc">多个数据源交叉核对这个 IP 的归属地、运营商和类型（住宅 / 机房 / 移动）。几家信息越一致越可信。</p>
+      <h2>多源地理核对 <span class="status" data-for="basic"></span></h2>
+      <p class="card-desc">用多个数据源交叉核对归属地与类型（住宅 / 机房 / 移动）。几家信息越一致越可信；差异大说明这个 IP 定位模糊。</p>
       <div class="body" id="basicBody"></div>
     </section>
 

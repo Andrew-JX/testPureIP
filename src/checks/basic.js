@@ -39,6 +39,7 @@ export async function basicInfo(ip, keys = {}) {
         : {
             country: ipapi.country,
             countryCode: ipapi.countryCode,
+            region: ipapi.regionName,
             city: ipapi.city,
             timezone: ipapi.timezone,
             isp: ipapi.isp,
@@ -63,6 +64,7 @@ export async function basicInfo(ip, keys = {}) {
         : {
             country: ipapiIs.location?.country,
             countryCode: ipapiIs.location?.country_code,
+            region: ipapiIs.location?.state,
             city: ipapiIs.location?.city,
             timezone: ipapiIs.location?.timezone,
             isp: ipapiIs.company?.name,
@@ -70,6 +72,10 @@ export async function basicInfo(ip, keys = {}) {
             asn: ipapiIs.asn?.asn ? `AS${ipapiIs.asn.asn}` : null,
             companyType: ipapiIs.company?.type, // isp / hosting / business / education
             asnType: ipapiIs.asn?.type,
+            asDomain: ipapiIs.company?.domain || ipapiIs.asn?.domain || null,
+            network: ipapiIs.company?.network || null, // IP 段
+            route: ipapiIs.asn?.route || null, // 路由前缀
+            abuserScore: ipapiIs.asn?.abuser_score || ipapiIs.company?.abuser_score || null,
             flags: {
               datacenter: ipapiIs.is_datacenter,
               proxy: ipapiIs.is_proxy,
