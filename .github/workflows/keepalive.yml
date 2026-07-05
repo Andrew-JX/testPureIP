@@ -1,0 +1,17 @@
+name: keep-alive
+
+# 每 10 分钟 ping 一次 Render 免费实例，防止它闲置 15 分钟后休眠导致冷启动。
+# Render 免费额度约 750 实例小时/月，单个服务常驻（约 720 小时）在额度内。
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render service
+        run: |
+          code=$(curl -sS -m 60 -o /dev/null -w "%{http_code}" https://pureip.onrender.com/api/config || echo "000")
+          echo "HTTP $code at $(date -u)"
