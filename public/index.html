@@ -33,31 +33,42 @@
         <div id="scoreGrade" class="grade">等待检测</div>
         <div id="scoreIp" class="mono"></div>
         <div id="scoreBreakdown" class="breakdown"></div>
+        <div class="score-legend dim">分数越高越纯净：<b class="good">85+ 纯净</b> · <b class="warn">55-84 一般</b> · <b class="bad">&lt;55 有风险</b>。综合下列各项加权得出。</div>
       </div>
+    </section>
+
+    <section class="card verdict-card hidden" id="card-verdict">
+      <h2>结论与建议</h2>
+      <div class="body" id="verdictBody"></div>
     </section>
 
     <section class="card highlight" id="card-agent">
       <h2>AI Agent 可用性检测 <span class="status" data-for="agent"></span></h2>
+      <p class="card-desc">评估 Claude / ChatGPT 等 AI 服务，会不会因为你的 IP 或浏览器环境把你判为高风险（弹验证码甚至封号）。分数越低越危险。</p>
       <div class="body" id="agentBody"></div>
     </section>
 
     <section class="card" id="card-basic">
       <h2>基础信息 <span class="status" data-for="basic"></span></h2>
+      <p class="card-desc">多个数据源交叉核对这个 IP 的归属地、运营商和类型（住宅 / 机房 / 移动）。几家信息越一致越可信。</p>
       <div class="body" id="basicBody"></div>
     </section>
 
     <section class="card" id="card-risk">
       <h2>风险评分 <span class="status" data-for="risk"></span></h2>
+      <p class="card-desc">各威胁情报库给这个 IP 打的“欺诈分”，0 最好、100 最差。多个库都低说明干净；分高说明被标记为代理 / 滥用。</p>
       <div class="body" id="riskBody"></div>
     </section>
 
     <section class="card" id="card-dnsbl">
       <h2>DNS 黑名单（共享/滥用检测）<span class="status" data-for="dnsbl"></span></h2>
+      <p class="card-desc">查这个 IP 是否上过垃圾邮件 / 滥用黑名单。命中说明它被人滥用过——常见于被很多人共用的“万人骑”IP。</p>
       <div class="body" id="dnsblBody"></div>
     </section>
 
     <section class="card hidden" id="card-unlock">
       <h2>AI / 流媒体解锁实测 <span class="status" data-for="unlock"></span></h2>
+      <p class="card-desc">用这个出口真实访问各服务，看能否打开、落地在哪个地区。“可用”才代表这条线路能正常使用该服务。</p>
       <div class="body" id="unlockBody"></div>
     </section>
   </main>

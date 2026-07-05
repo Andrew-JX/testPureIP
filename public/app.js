@@ -44,9 +44,9 @@ function renderBasic(data) {
       <td>${flags.join('') || '<span class="dim">—</span>'}</td>
     </tr>`;
   });
-  $('basicBody').innerHTML = `<table>
+  $('basicBody').innerHTML = `<div class="table-scroll"><table>
     <tr><th>数据源</th><th>位置</th><th>ASN</th><th>ISP / 组织</th><th>rDNS / 时区</th><th>标记</th></tr>
-    ${rows.join('')}</table>`;
+    ${rows.join('')}</table></div>`;
 }
 
 /* ---------- 风险评分 ---------- */
@@ -202,40 +202,51 @@ async function analyzeAgent(exitIp, basic) {
   const leakedPublic = rtc.ips.filter(isPublicIp);
   const rtcLeak = leakedPublic.some((ip) => exitIp && ip !== exitIp);
 
-  // 逐项信号评估：penalty 越大越危险
+  // 逐项信号评估：penalty 越大越危险；advice = 给用户的可操作建议（仅 bad/warn 需要）
   const signals = [];
-  const push = (label, level, penalty, detail) => signals.push({ label, level, penalty, detail });
+  const push = (label, level, penalty, detail, advice) => signals.push({ label, level, penalty, detail, advice });
 
   // 时区 / IP 地理一致性
   if (ipTz && tz) {
     const sameRegion = ipTz.split('/')[0] === tz.split('/')[0];
-    if (!sameRegion) push('时区与 IP 地理不一致', 'bad', 25, `浏览器 ${tz} vs IP ${ipTz}`);
+    if (!sameRegion) push('时区与 IP 地理不一致', 'bad', 25, `浏览器 ${tz} vs IP ${ipTz}`,
+      '你的系统时区暴露了真实位置，和代理 IP 对不上，AI 服务会怀疑你在用代理。建议把系统 / 浏览器时区改成与 IP 同一地区。');
     else push('时区与 IP 地理一致', 'good', 0, tz);
   } else {
     push('系统时区', 'dim', 0, tz);
   }
 
   // 语言 / 中文特征（AI 服务对中国大陆环境更敏感）
-  if (/^zh-CN|zh-Hans/i.test(navigator.language)) push('首选语言为简体中文', 'warn', 12, langs);
+  if (/^zh-CN|zh-Hans/i.test(navigator.language)) push('首选语言为简体中文', 'warn', 12, langs,
+    '浏览器首选语言是简体中文，可能略微增加相关风控。可在浏览器设置里把英文调到语言列表最前面。');
   else push('浏览器语言', 'good', 0, langs);
-  if (cnFonts >= 2) push('检测到多种中文字体', 'warn', 8, `${cnFonts}/4`);
+  if (cnFonts >= 2) push('检测到多种中文字体', 'warn', 8, `${cnFonts}/4`,
+    '系统装有多种中文字体，是中国大陆环境的弱特征。影响很小，一般可忽略。');
 
   // WebRTC 泄漏
   if (!rtc.supported) push('WebRTC 不可用/被禁用', 'good', 0, '无泄漏面');
-  else if (rtcLeak) push('WebRTC 泄漏了不同的公网 IP', 'bad', 30, leakedPublic.join(', '));
-  else if (leakedPublic.length) push('WebRTC 暴露公网 IP（与出口一致）', 'warn', 8, leakedPublic.join(', '));
+  else if (rtcLeak) push('WebRTC 泄漏了不同的公网 IP', 'bad', 30, leakedPublic.join(', '),
+    '严重：浏览器通过 WebRTC 暴露了你的真实 IP，代理形同虚设，网站能直接看到你在哪。建议在浏览器禁用 WebRTC（装 “WebRTC Control / Leak Prevent” 类插件），或换用能阻断 WebRTC 的客户端。');
+  else if (leakedPublic.length) push('WebRTC 暴露公网 IP（与出口一致）', 'warn', 8, leakedPublic.join(', '),
+    '目前泄漏的 IP 和出口一致，风险不大；但换到别的代理时要复查这一项，避免泄漏真实 IP。');
   else push('WebRTC 无公网 IP 泄漏', 'good', 0, rtc.ips.length ? '仅本地/mDNS 候选' : '无候选');
 
   // 自动化 / Agent 指纹
-  if (webdriver) push('navigator.webdriver = true（自动化环境）', 'bad', 20, '易被判定为 bot');
+  if (webdriver) push('navigator.webdriver = true（自动化环境）', 'bad', 20, '易被判定为 bot',
+    '检测到自动化 / 无头浏览器特征，极易被判定为机器人。请用正常浏览器访问 AI 服务。');
   else push('无自动化标志', 'good', 0, 'navigator.webdriver = false');
 
   // IP 侧风险（决定 AI 服务是否直接拒绝该出口）
-  if (ipComFlags.hosting || ipapiFlags.datacenter) push('IP 为机房/数据中心', 'bad', 28, 'AI 服务常直接拦截机房 IP');
-  if (ipapiFlags.proxy || ipComFlags.proxy) push('IP 被标记为代理', 'bad', 22, '');
-  if (ipapiFlags.vpn) push('IP 被标记为 VPN', 'warn', 12, '');
-  if (ipapiFlags.tor) push('IP 为 Tor 出口', 'bad', 40, '');
-  if (ipapiFlags.abuser) push('IP 有滥用记录', 'bad', 25, '');
+  if (ipComFlags.hosting || ipapiFlags.datacenter) push('IP 为机房/数据中心', 'bad', 28, 'AI 服务常直接拦截机房 IP',
+    '机房 IP 最容易被 AI 服务直接拦截。建议改用住宅（家庭宽带）或移动网络 IP。');
+  if (ipapiFlags.proxy || ipComFlags.proxy) push('IP 被标记为代理', 'bad', 22, '',
+    '这个 IP 已被情报库标记为代理 / 中转，风控概率高。建议更换为未被标记的住宅 IP。');
+  if (ipapiFlags.vpn) push('IP 被标记为 VPN', 'warn', 12, '',
+    '这个 IP 属于 VPN 段，部分服务会限制。若频繁触发验证码，考虑换住宅 IP。');
+  if (ipapiFlags.tor) push('IP 为 Tor 出口', 'bad', 40, '',
+    'Tor 出口几乎必被 AI 服务封禁，请勿用于登录。');
+  if (ipapiFlags.abuser) push('IP 有滥用记录', 'bad', 25, '',
+    '这个 IP 有滥用历史（可能被前一个用户滥用过），建议更换。');
 
   const totalPenalty = signals.reduce((s, x) => s + x.penalty, 0);
   const score = Math.max(0, 100 - totalPenalty);
@@ -251,10 +262,13 @@ function renderAgent(agent) {
   const { score, verdict, signals, meta } = agent;
   const rows = signals.map((s) => {
     const icon = { good: '✓', warn: '△', bad: '✗', dim: '·' }[s.level] || '·';
+    const advice = (s.level === 'bad' || s.level === 'warn') && s.advice
+      ? `<div class="signal-advice">→ ${esc(s.advice)}</div>` : '';
     return `<div class="signal ${s.level}">
       <span class="signal-icon">${icon}</span>
       <span class="signal-label">${esc(s.label)}</span>
       <span class="signal-detail dim">${esc(s.detail || '')}</span>
+      ${advice}
     </div>`;
   });
   $('agentBody').innerHTML = `
@@ -266,6 +280,45 @@ function renderAgent(agent) {
       </div>
     </div>
     <div class="signal-list">${rows.join('')}</div>`;
+}
+
+/* ---------- 结论与建议（大白话总结 + 可操作项） ---------- */
+
+function renderVerdict(total, grade, agent, results) {
+  const overall =
+    total >= 85 ? { cls: 'good', text: '这个 IP 很干净，可放心用于注册 / 登录 Claude、ChatGPT 等对 IP 敏感的服务。' } :
+    total >= 70 ? { cls: 'good', text: '基本可用。有少量风险点（见下），敏感操作前建议先优化。' } :
+    total >= 55 ? { cls: 'warn', text: '质量一般。登录 AI 服务可能偶发验证码，不建议用于重要 / 长期账号。' } :
+                  { cls: 'bad', text: '风险较高，容易被 AI 服务拦截或风控。建议更换 IP，或先修复下面的问题。' };
+
+  // 收集问题：AI Agent 的 bad/warn 信号（自带建议）+ DNS 黑名单命中
+  const issues = [];
+  (agent?.signals || []).forEach((s) => {
+    if ((s.level === 'bad' || s.level === 'warn') && s.advice) {
+      issues.push({ level: s.level, label: s.label, advice: s.advice });
+    }
+  });
+  const db = results?.dnsbl;
+  if (db?.supported && db.listedCount > 0) {
+    issues.push({
+      level: 'bad',
+      label: `IP 命中 ${db.listedCount} 个 DNS 黑名单`,
+      advice: '这个 IP 被人发过垃圾邮件 / 滥用过（常见于被很多人共用的“万人骑”IP），换一个独享的干净 IP 更安全。',
+    });
+  }
+  // 按严重度排序（bad 在前）
+  issues.sort((a, b) => (a.level === 'bad' ? 0 : 1) - (b.level === 'bad' ? 0 : 1));
+
+  const issueHtml = issues.length
+    ? issues.slice(0, 6).map((i) =>
+        `<li class="issue ${i.level}"><b>${esc(i.label)}</b><span>${esc(i.advice)}</span></li>`).join('')
+    : '<li class="issue good"><b>没有发现明显风险点</b><span>各项指标正常，可以放心使用。</span></li>';
+
+  $('verdictBody').innerHTML = `
+    <div class="verdict-overall ${overall.cls}">${esc(overall.text)}</div>
+    <div class="verdict-sub dim">${issues.length ? '检测到的风险点与建议：' : ''}</div>
+    <ul class="issue-list">${issueHtml}</ul>`;
+  $('card-verdict').classList.remove('hidden');
 }
 
 /* ---------- 综合评分 ---------- */
@@ -368,6 +421,7 @@ async function run(proxy) {
   $('run').disabled = true;
   $('runProxy').disabled = true;
   $('report').classList.remove('hidden');
+  $('card-verdict').classList.add('hidden');
   $('card-unlock').classList.toggle('hidden', !useProxy);
   const stages = ['agent', 'basic', 'risk', 'dnsbl', ...(useProxy ? ['unlock'] : [])];
   stages.forEach((n) => setStatus(n, 'loading'));
@@ -412,6 +466,7 @@ async function run(proxy) {
 
     const score = computeScore(results.basic, results.risk, results.dnsbl, results.unlock, results.agent);
     const grade = renderScore(ip, score);
+    renderVerdict(score.total, grade, results.agent, results);
     const loc = results.basic?.sources?.['ip-api.com'];
     saveHistory({
       time: Date.now(), ip, proxy: useProxy ? proxy : '', total: score.total, grade,
