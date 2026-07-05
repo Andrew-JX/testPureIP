@@ -84,15 +84,56 @@ function rateLimit(req, res, next) {
   rec.count++;
   next();
 }
+
+// 全局每分钟总量上限：兜住 XFF 伪造绕过单 IP 限流的情况，保护第三方 API 额度
+const GLOBAL_MAX = Number(process.env.GLOBAL_MAX) || 300;
+let globalWindow = { start: Date.now(), count: 0 };
+function globalLimit(req, res, next) {
+  const now = Date.now();
+  if (now - globalWindow.start > 60_000) globalWindow = { start: now, count: 0 };
+  if (globalWindow.count >= GLOBAL_MAX) {
+    return res.status(429).json({ error: '服务繁忙，请稍后再试' });
+  }
+  globalWindow.count++;
+  next();
+}
+
+// 按 IP 缓存查询结果 10 分钟：同一 IP 反复检测不再重打第三方 API
+const CACHE_TTL = 10 * 60_000;
+const CACHE_MAX = 5000; // 上限，防攻击者用海量不同 IP 撑爆内存
+const cache = new Map();
+function cacheGet(key) {
+  const rec = cache.get(key);
+  if (rec && Date.now() - rec.at < CACHE_TTL) return rec.data;
+  if (rec) cache.delete(key);
+  return null;
+}
+function cacheSet(key, data) {
+  if (cache.size >= CACHE_MAX) {
+    // Map 保留插入顺序，删掉最旧的一批
+    for (const k of [...cache.keys()].slice(0, Math.ceil(CACHE_MAX / 5))) cache.delete(k);
+  }
+  cache.set(key, { at: Date.now(), data });
+}
+// 带缓存执行：命中直接返回，否则计算并写入
+async function cached(key, compute) {
+  const hit = cacheGet(key);
+  if (hit) return hit;
+  const data = await compute();
+  cacheSet(key, data);
+  return data;
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of hits) if (now - v.start > 120_000) hits.delete(k);
+  for (const [k, v] of cache) if (now - v.at > CACHE_TTL) cache.delete(k);
 }, 120_000).unref();
 
 const app = express();
 if (TRUST_PROXY) app.set('trust proxy', true);
 app.use(express.json());
-app.use('/api', rateLimit);
+app.use('/api', globalLimit, rateLimit);
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/config', (req, res) => {
@@ -142,20 +183,20 @@ app.post('/api/exit-ip', requireProxyMode, async (req, res) => {
 app.post('/api/basic', async (req, res) => {
   const { ip } = req.body || {};
   if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
-  res.json(await basicInfo(ip, loadKeys()));
+  res.json(await cached(`basic:${ip}`, () => basicInfo(ip, loadKeys())));
 });
 
 app.post('/api/risk', async (req, res) => {
   const { ip, ipapiis } = req.body || {};
   if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
   const basicResult = ipapiis ? { sources: { 'ipapi.is': ipapiis } } : null;
-  res.json(await riskScores(ip, loadKeys(), basicResult));
+  res.json(await cached(`risk:${ip}`, () => riskScores(ip, loadKeys(), basicResult)));
 });
 
 app.post('/api/dnsbl', async (req, res) => {
   const { ip } = req.body || {};
   if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
-  res.json(await dnsblCheck(ip));
+  res.json(await cached(`dnsbl:${ip}`, () => dnsblCheck(ip)));
 });
 
 // AI/流媒体解锁实测（走指定代理；不填代理则测服务器出口，仅在高级模式使用）
