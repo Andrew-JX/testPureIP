@@ -438,10 +438,15 @@ $('toggleAdv').addEventListener('click', () => {
 });
 $('clearHistory').addEventListener('click', () => { localStorage.removeItem(HISTORY_KEY); renderHistory(); });
 
-fetch('/api/config').then((r) => r.json()).then(({ keys }) => {
+fetch('/api/config').then((r) => r.json()).then(({ keys, proxyMode }) => {
   const on = Object.entries(keys).filter(([, v]) => v).map(([k]) => k);
   $('keyStatus').textContent = on.length
     ? `增强数据源已启用: ${on.join(', ')}`
     : '';
+  // 公开部署默认关闭代理模式（防 SSRF），隐藏高级面板
+  if (!proxyMode) {
+    $('toggleAdv').parentElement.classList.add('hidden');
+    $('advPanel').classList.add('hidden');
+  }
 }).catch(() => {});
 renderHistory();

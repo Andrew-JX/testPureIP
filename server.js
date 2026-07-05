@@ -14,6 +14,18 @@ const PORT = process.env.PORT || 3210;
 const HOST = process.env.HOST || '0.0.0.0';
 // 部署在 Render / nginx / Cloudflare 等反代后面时设 TRUST_PROXY=1，才能拿到访客真实 IP
 const TRUST_PROXY = /^(1|true)$/i.test(process.env.TRUST_PROXY || '');
+// 代理模式（/api/exit-ip、/api/unlock）会让服务器连接用户指定地址，存在 SSRF 风险，
+// 默认仅在非反代（本地）环境开启；公开部署（TRUST_PROXY=1）默认关闭。可用 ENABLE_PROXY_MODE 显式覆盖。
+const ENABLE_PROXY_MODE = process.env.ENABLE_PROXY_MODE
+  ? /^(1|true)$/i.test(process.env.ENABLE_PROXY_MODE)
+  : !TRUST_PROXY;
+
+// 校验是否为合法 IP（IPv4 / IPv6），防止把任意字符串拼进第三方查询 URL
+function isValidIp(ip) {
+  if (typeof ip !== 'string' || ip.length < 2 || ip.length > 45) return false;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return ip.split('.').every((o) => Number(o) <= 255);
+  return ip.includes(':') && /^[0-9a-fA-F:]+$/.test(ip);
+}
 
 // key 来源：环境变量优先（托管平台用），其次本地 config.json
 function loadKeys() {
@@ -86,6 +98,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/config', (req, res) => {
   const keys = loadKeys();
   res.json({
+    proxyMode: ENABLE_PROXY_MODE,
     keys: Object.fromEntries(
       ['abuseipdb', 'ipqs', 'ipinfo', 'ipapiis', 'proxycheck'].map((k) => [k, Boolean(keys[k])])
     ),
@@ -105,8 +118,16 @@ app.post('/api/self', async (req, res) => {
   res.json({ ip });
 });
 
+// 代理模式端点的统一守卫：公开部署默认关闭，防 SSRF / 被当开放代理滥用
+function requireProxyMode(req, res, next) {
+  if (!ENABLE_PROXY_MODE) {
+    return res.status(403).json({ error: '代理模式在公开部署中已禁用（防 SSRF）；请在本地运行使用该功能' });
+  }
+  next();
+}
+
 // 探测某个代理的出口 IP（高级：测其他地区 IP）
-app.post('/api/exit-ip', async (req, res) => {
+app.post('/api/exit-ip', requireProxyMode, async (req, res) => {
   let dispatcher;
   try {
     dispatcher = buildDispatcher(req.body?.proxy);
@@ -120,25 +141,25 @@ app.post('/api/exit-ip', async (req, res) => {
 
 app.post('/api/basic', async (req, res) => {
   const { ip } = req.body || {};
-  if (!ip) return res.status(400).json({ error: '缺少 ip' });
+  if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
   res.json(await basicInfo(ip, loadKeys()));
 });
 
 app.post('/api/risk', async (req, res) => {
   const { ip, ipapiis } = req.body || {};
-  if (!ip) return res.status(400).json({ error: '缺少 ip' });
+  if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
   const basicResult = ipapiis ? { sources: { 'ipapi.is': ipapiis } } : null;
   res.json(await riskScores(ip, loadKeys(), basicResult));
 });
 
 app.post('/api/dnsbl', async (req, res) => {
   const { ip } = req.body || {};
-  if (!ip) return res.status(400).json({ error: '缺少 ip' });
+  if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
   res.json(await dnsblCheck(ip));
 });
 
 // AI/流媒体解锁实测（走指定代理；不填代理则测服务器出口，仅在高级模式使用）
-app.post('/api/unlock', async (req, res) => {
+app.post('/api/unlock', requireProxyMode, async (req, res) => {
   let dispatcher;
   try {
     dispatcher = buildDispatcher(req.body?.proxy);
