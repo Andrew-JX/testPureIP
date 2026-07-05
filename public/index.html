@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PureIP · IP 纯净度 & AI Agent 可用性检测</title>
+  <meta name="description" content="一键检测你的 IP 纯净度：多源风险评分、住宅/机房识别、DNS 黑名单、AI Agent 可用性强力检测。" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>PureIP <span class="badge">纯净度检测</span></h1>
+    <div class="sub">多源风险评分 · 住宅/机房识别 · DNS 黑名单 · <strong>AI Agent 可用性强力检测</strong></div>
+  </header>
+
+  <section class="control">
+    <button id="run" class="primary">检测我的 IP</button>
+    <span class="control-hint">直接检测你当前访问用的出口 IP，无需任何配置</span>
+    <div class="advanced-toggle"><button id="toggleAdv" class="link-btn">▸ 高级：检测其他地区 IP（填代理）</button></div>
+    <div id="advPanel" class="advanced hidden">
+      <input id="proxy" type="text"
+        placeholder="socks5://127.0.0.1:7890 或 http://user:pass@host:port" />
+      <button id="runProxy">测这个代理</button>
+      <div class="control-hint">用于对比新加坡等其他地区节点；此模式会额外做 AI/流媒体解锁实测。</div>
+    </div>
+    <span id="keyStatus" class="key-status"></span>
+  </section>
+
+  <main id="report" class="hidden">
+    <section class="card score-card" id="card-score">
+      <div class="gauge"><span id="scoreNum">--</span></div>
+      <div class="score-meta">
+        <div id="scoreGrade" class="grade">等待检测</div>
+        <div id="scoreIp" class="mono"></div>
+        <div id="scoreBreakdown" class="breakdown"></div>
+      </div>
+    </section>
+
+    <section class="card highlight" id="card-agent">
+      <h2>AI Agent 可用性检测 <span class="status" data-for="agent"></span></h2>
+      <div class="body" id="agentBody"></div>
+    </section>
+
+    <section class="card" id="card-basic">
+      <h2>基础信息 <span class="status" data-for="basic"></span></h2>
+      <div class="body" id="basicBody"></div>
+    </section>
+
+    <section class="card" id="card-risk">
+      <h2>风险评分 <span class="status" data-for="risk"></span></h2>
+      <div class="body" id="riskBody"></div>
+    </section>
+
+    <section class="card" id="card-dnsbl">
+      <h2>DNS 黑名单（共享/滥用检测）<span class="status" data-for="dnsbl"></span></h2>
+      <div class="body" id="dnsblBody"></div>
+    </section>
+
+    <section class="card hidden" id="card-unlock">
+      <h2>AI / 流媒体解锁实测 <span class="status" data-for="unlock"></span></h2>
+      <div class="body" id="unlockBody"></div>
+    </section>
+  </main>
+
+  <section class="card" id="card-history">
+    <h2>历史记录 <button id="clearHistory" class="link-btn">清空</button></h2>
+    <div class="body" id="historyBody"><span class="dim">暂无记录</span></div>
+  </section>
+
+  <footer>
+    <span class="dim">本地运算 · 不存储你的检测数据。IP 库来自 ip-api / ipapi.is / ipwho.is / ProxyCheck / Shodan 等公开数据源。</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

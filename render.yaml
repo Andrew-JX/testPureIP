@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: pureip
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      # 部署在 Render 反代后面，必须开启才能拿到访客真实 IP
+      - key: TRUST_PROXY
+        value: "1"
+      - key: NODE_VERSION
+        value: "22"
+      # 以下为可选的风险数据源 key，sync:false 表示不写入仓库、由你在 Render 后台填写
+      - key: IPQS_KEY
+        sync: false
+      - key: ABUSEIPDB_KEY
+        sync: false
+      - key: PROXYCHECK_KEY
+        sync: false
+      - key: IPINFO_KEY
+        sync: false
+      - key: IPAPIIS_KEY
+        sync: false

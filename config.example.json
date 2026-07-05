@@ -1,0 +1,10 @@
+{
+  "_说明": "本地开发用：复制本文件为 config.json 并填入你的 key。全部可选，填了对应数据源才会启用。托管部署（Render 等）请改用环境变量 IPQS_KEY / ABUSEIPDB_KEY / PROXYCHECK_KEY / IPINFO_KEY / IPAPIIS_KEY，优先级高于本文件。",
+  "keys": {
+    "abuseipdb": "在 https://www.abuseipdb.com/account/api 注册，免费 1000 次/天",
+    "ipqs": "在 https://www.ipqualityscore.com/create-account 注册，免费 5000 次/月",
+    "ipinfo": "在 https://ipinfo.io/signup 注册，免费 50000 次/月",
+    "ipapiis": "在 https://ipapi.is/app/signup 注册，免费 1000 次/天（不填也能用，匿名额度较小）",
+    "proxycheck": "在 https://proxycheck.io/dashboard 注册，免费 1000 次/天（不填也能用，100 次/天）"
+  }
+}
