@@ -24,3 +24,6 @@ services:
         sync: false
       - key: IPAPIIS_KEY
         sync: false
+      # Spamhaus DQS key：让金标准黑名单真正生效（免费注册 spamhaus.com DQS）
+      - key: SPAMHAUS_DQS_KEY
+        sync: false

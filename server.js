@@ -41,6 +41,7 @@ function loadKeys() {
     ipinfo: process.env.IPINFO_KEY,
     ipapiis: process.env.IPAPIIS_KEY,
     proxycheck: process.env.PROXYCHECK_KEY,
+    spamhausDqs: process.env.SPAMHAUS_DQS_KEY,
   };
   const merged = { ...fileKeys };
   for (const [k, v] of Object.entries(envKeys)) if (v) merged[k] = v;
@@ -196,7 +197,7 @@ app.post('/api/risk', async (req, res) => {
 app.post('/api/dnsbl', async (req, res) => {
   const { ip } = req.body || {};
   if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
-  res.json(await cached(`dnsbl:${ip}`, () => dnsblCheck(ip)));
+  res.json(await cached(`dnsbl:${ip}`, () => dnsblCheck(ip, loadKeys().spamhausDqs)));
 });
 
 // AI/流媒体解锁实测（走指定代理；不填代理则测服务器出口，仅在高级模式使用）
