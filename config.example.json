@@ -3,7 +3,7 @@
   "keys": {
     "abuseipdb": "在 https://www.abuseipdb.com/account/api 注册，免费 1000 次/天",
     "ipqs": "在 https://www.ipqualityscore.com/create-account 注册，免费 5000 次/月",
-    "ipinfo": "在 https://ipinfo.io/signup 注册，免费 50000 次/月",
+    "ipinfo": "在 https://ipinfo.io/signup 注册（IPinfo Lite 免费档，走 api.ipinfo.io/lite，提供国家+ASN 级，无城市/代理检测）",
     "ipapiis": "在 https://ipapi.is/app/signup 注册，免费 1000 次/天（不填也能用，匿名额度较小）",
     "proxycheck": "在 https://proxycheck.io/dashboard 注册，免费 1000 次/天（不填也能用，100 次/天）",
     "spamhausDqs": "在 https://www.spamhaus.com 注册 Data Query Service(DQS) 免费档，签署 datafeed 协议后在 Dashboard 拿 DQS key；让 Spamhaus ZEN 金标准黑名单真正生效"

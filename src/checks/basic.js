@@ -27,7 +27,7 @@ export async function basicInfo(ip, keys = {}) {
     getJson(`https://ipwho.is/${ip}`),
     getJson(`https://api.ipapi.is/?q=${ip}${keys.ipapiis ? `&key=${keys.ipapiis}` : ''}`),
     keys.ipinfo
-      ? getJson(`https://ipinfo.io/${ip}/json?token=${keys.ipinfo}`)
+      ? getJson(`https://api.ipinfo.io/lite/${ip}?token=${keys.ipinfo}`)
       : Promise.resolve(null),
   ]);
 
@@ -86,17 +86,16 @@ export async function basicInfo(ip, keys = {}) {
               mobile: ipapiIs.is_mobile,
             },
           },
-      'ipinfo.io': !ipinfo
+      'ipinfo Lite': !ipinfo
         ? { skipped: '未配置 API key' }
         : ipinfo.__error
           ? { error: ipinfo.__error }
           : {
               country: ipinfo.country,
-              countryCode: ipinfo.country,
-              city: ipinfo.city,
-              timezone: ipinfo.timezone,
-              org: ipinfo.org,
-              rdns: ipinfo.hostname || null,
+              countryCode: ipinfo.country_code,
+              org: ipinfo.as_name,
+              asn: ipinfo.asn,
+              asDomain: ipinfo.as_domain,
             },
     },
   };
