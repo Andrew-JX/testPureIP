@@ -80,16 +80,16 @@ async function ipqs(ip, key) {
   };
 }
 
-/** ipapi.is 的滥用/代理布尔标记折算为分数参考 */
+/**
+ * ipapi.is 的信誉信号折算。只取"滥用/Tor"这类声誉标记，
+ * 不含 datacenter/proxy/vpn —— 那些属于"IP 类型"维度，放这里会与之重复计分。
+ */
 function ipapiIsRisk(ipapiIsData) {
   if (!ipapiIsData || ipapiIsData.error || ipapiIsData.skipped) return null;
   const f = ipapiIsData.flags || {};
   let score = 0;
-  if (f.abuser) score += 50;
-  if (f.proxy) score += 30;
-  if (f.vpn) score += 20;
-  if (f.tor) score += 50;
-  if (f.datacenter) score += 15;
+  if (f.abuser) score += 70;
+  if (f.tor) score += 30;
   return Math.min(100, score);
 }
 
@@ -107,7 +107,7 @@ export async function riskScores(ip, keys = {}, basicResult = null) {
     ipqs: quality,
     ipapiis: {
       score: ipapiIsRisk(basicResult?.sources?.['ipapi.is']),
-      note: '由 ipapi.is 布尔风险标记折算',
+      note: '仅取 ipapi.is 滥用 / Tor 信誉信号',
     },
   };
 }

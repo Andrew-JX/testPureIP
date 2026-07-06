@@ -180,7 +180,7 @@ function renderRisk(data) {
     add('IPQualityScore', q.score, tags || q.connectionType);
   } else notes.push(`IPQS: ${q.skipped || q.error}`);
 
-  if (data.ipapiis?.score != null) add('ipapi.is（折算）', data.ipapiis.score);
+  if (data.ipapiis?.score != null) add('ipapi.is 滥用信誉', data.ipapiis.score);
 
   let idbHtml = '';
   const idb = data.internetdb;
@@ -214,9 +214,13 @@ function renderDnsbl(data) {
     const label = l.status === 'clean' ? '干净' : l.status === 'listed' ? '命中' : '未知';
     return `<span class="tag ${cls}" title="${esc(l.note || '')}">${esc(l.name)}: ${label}</span>`;
   });
-  const summary = data.listedCount === 0
-    ? `<span class="tag good">未命中任何黑名单（${data.checkedCount} 个有效查询）</span>`
-    : `<span class="tag bad">命中 ${data.listedCount} 个黑名单 — 该 IP 有滥用历史</span>`;
+  const total = data.total ?? data.lists.length;
+  const lowCoverage = data.checkedCount < 3;
+  const summary = data.listedCount > 0
+    ? `<span class="tag bad">命中 ${data.listedCount} 个黑名单 — 该 IP 有滥用历史</span>`
+    : lowCoverage
+      ? `<span class="tag warn">仅 ${data.checkedCount}/${total} 个库有效应答，覆盖不足，结果仅供参考</span>`
+      : `<span class="tag good">未命中黑名单（${data.checkedCount}/${total} 个库有效查询）</span>`;
   $('dnsblBody').innerHTML = `<div style="margin-bottom:8px">${summary}</div>${tags.join(' ')}`;
 }
 
@@ -451,7 +455,17 @@ function computeScore(basic, risk, dnsbl, unlock, agent) {
   if (ipapiFlags.mobile || srcs['ipapi.is']?.companyType === 'isp') type = Math.min(100, type + 10);
   parts.type = Math.max(0, type);
 
-  parts.dnsbl = !dnsbl?.supported ? 70 : dnsbl.listedCount === 0 ? 100 : dnsbl.listedCount === 1 ? 50 : 10;
+  // DNS 黑名单：命中扣分；命中 0 时按"有效查询覆盖度"给分，覆盖太低不给满分（防假阴性）
+  if (!dnsbl?.supported) {
+    parts.dnsbl = 70;
+  } else if (dnsbl.listedCount >= 2) {
+    parts.dnsbl = 10;
+  } else if (dnsbl.listedCount === 1) {
+    parts.dnsbl = 45;
+  } else {
+    const checked = dnsbl.checkedCount ?? 0;
+    parts.dnsbl = checked >= 5 ? 100 : checked >= 3 ? 88 : checked >= 1 ? 75 : 55;
+  }
   parts.agent = agent?.score ?? 60;
 
   if (unlock) {
