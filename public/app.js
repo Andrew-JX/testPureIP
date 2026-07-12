@@ -243,6 +243,114 @@ function renderUnlock(data) {
   $('unlockBody').innerHTML = `<div class="unlock-grid">${items.join('')}</div>`;
 }
 
+/* ---------- 网络稳定性（浏览器 -> PureIP 节点） ---------- */
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function timedFetch(url, timeout = 3000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  const started = performance.now();
+  try {
+    const res = await fetch(url, { cache: 'no-store', signal: controller.signal });
+    if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+    return { ok: true, rtt: performance.now() - started, res };
+  } catch (error) {
+    return { ok: false, rtt: null, error };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function percentile(values, ratio) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1)];
+}
+
+function networkScore(avg, jitter, loss) {
+  const latencyPenalty = avg <= 80 ? 0 : Math.min(25, (avg - 80) / 8);
+  const jitterPenalty = jitter <= 12 ? 0 : Math.min(30, (jitter - 12) * 1.2);
+  return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - loss * 0.55));
+}
+
+async function measureNetwork() {
+  const sampleCount = 12;
+  // 定时发起而非串行等待，避免一次超时把整次检测拖得过长。
+  const probes = Array.from({ length: sampleCount }, (_, i) =>
+    wait(i * 250).then(() => timedFetch(`/api/network/ping?t=${Date.now()}-${i}`))
+  );
+  const samples = await Promise.all(probes);
+  const rtts = samples.filter((s) => s.ok).map((s) => s.rtt);
+  if (!rtts.length) throw new Error('所有网络探针均失败，请检查连接后重试');
+
+  const avg = rtts.reduce((sum, n) => sum + n, 0) / rtts.length;
+  const jitter = rtts.length < 2 ? 0 : rtts.slice(1)
+    .reduce((sum, n, i) => sum + Math.abs(n - rtts[i]), 0) / (rtts.length - 1);
+  const loss = ((sampleCount - rtts.length) / sampleCount) * 100;
+
+  let downloadMbps = null;
+  const downloadStarted = performance.now();
+  const download = await timedFetch(`/api/network/download?t=${Date.now()}`, 8000);
+  if (download.ok) {
+    const bytes = (await download.res.arrayBuffer()).byteLength;
+    const seconds = (performance.now() - downloadStarted) / 1000;
+    if (seconds > 0) downloadMbps = (bytes * 8) / seconds / 1_000_000;
+  }
+
+  return {
+    score: networkScore(avg, jitter, loss),
+    avg, jitter, loss, min: Math.min(...rtts), p95: percentile(rtts, 0.95),
+    success: rtts.length, total: sampleCount, downloadMbps, rtts,
+  };
+}
+
+function renderNetwork(data) {
+  const cls = data.score >= 90 ? 'good' : data.score >= 70 ? 'warn' : 'bad';
+  const grade = data.score >= 90 ? '稳定' : data.score >= 75 ? '良好' : data.score >= 55 ? '一般' : '不稳定';
+  const max = Math.max(1, ...data.rtts);
+  const bars = data.rtts.map((n) =>
+    `<i style="height:${Math.max(8, Math.round(n / max * 100))}%" title="${Math.round(n)} ms"></i>`
+  ).join('');
+  const speed = data.downloadMbps == null ? '测试失败' : `${data.downloadMbps.toFixed(1)} Mbps`;
+  $('networkBody').innerHTML = `
+    <div class="network-head">
+      <div class="network-score ${cls}">${data.score}<span>/100</span></div>
+      <div><div class="network-grade ${cls}">${grade}</div><div class="dim">浏览器到本站节点 · ${data.success}/${data.total} 次成功</div></div>
+    </div>
+    <div class="network-metrics">
+      <div><b>${Math.round(data.avg)} ms</b><span>平均延迟</span></div>
+      <div><b>${Math.round(data.jitter)} ms</b><span>抖动</span></div>
+      <div><b class="${data.loss > 0 ? 'bad' : ''}">${data.loss.toFixed(1)}%</b><span>HTTP 失败率</span></div>
+      <div><b>${Math.round(data.p95)} ms</b><span>P95 延迟</span></div>
+      <div><b>${speed}</b><span>参考下载</span></div>
+    </div>
+    <div class="latency-chart" aria-label="延迟采样图">${bars}</div>
+    <div class="network-note dim">最低 ${Math.round(data.min)} ms。HTTP 失败率是网页体验层近似值，不等同于 ICMP 丢包；结果会受 PureIP 节点距离和服务端瞬时负载影响。</div>`;
+}
+
+let networkRunning = false;
+async function runNetworkStability() {
+  if (networkRunning) return null;
+  networkRunning = true;
+  $('rerunNetwork').disabled = true;
+  setStatus('network', 'loading');
+  $('networkBody').innerHTML = '<span class="dim">正在连续采样，约需 3–10 秒…</span>';
+  try {
+    const result = await measureNetwork();
+    renderNetwork(result);
+    setStatus('network', 'done');
+    return result;
+  } catch (e) {
+    setStatus('network', 'error');
+    $('networkBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`;
+    return null;
+  } finally {
+    networkRunning = false;
+    $('rerunNetwork').disabled = false;
+  }
+}
+
 /* ---------- AI Agent 可用性检测（客户端指纹 + IP 侧信号） ---------- */
 
 function detectChineseFont() {
@@ -541,7 +649,7 @@ async function run(proxy) {
   $('report').classList.remove('hidden');
   $('card-verdict').classList.add('hidden');
   $('card-unlock').classList.toggle('hidden', !useProxy);
-  const stages = ['detail', 'agent', 'basic', 'risk', 'dnsbl', ...(useProxy ? ['unlock'] : [])];
+  const stages = ['detail', 'agent', 'network', 'basic', 'risk', 'dnsbl', ...(useProxy ? ['unlock'] : [])];
   stages.forEach((n) => setStatus(n, 'loading'));
   $('scoreNum').textContent = '--';
   $('scoreGrade').textContent = '检测中…';
@@ -579,7 +687,8 @@ async function run(proxy) {
       .then((d) => { results.dnsbl = d; renderDnsbl(d); setStatus('dnsbl', 'done'); })
       .catch((e) => { setStatus('dnsbl', 'error'); $('dnsblBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`; });
 
-    const jobs = [riskP, dnsblP, agentP];
+    const networkP = runNetworkStability().then((d) => { results.network = d; });
+    const jobs = [riskP, dnsblP, agentP, networkP];
     if (useProxy) {
       jobs.push(post('/api/unlock', { proxy })
         .then((d) => { results.unlock = d; renderUnlock(d); setStatus('unlock', 'done'); })
@@ -607,6 +716,7 @@ async function run(proxy) {
 }
 
 $('run').addEventListener('click', () => run(''));
+$('rerunNetwork').addEventListener('click', runNetworkStability);
 $('runProxy').addEventListener('click', () => run($('proxy').value));
 $('proxy').addEventListener('keydown', (e) => { if (e.key === 'Enter') run($('proxy').value); });
 $('toggleAdv').addEventListener('click', () => {

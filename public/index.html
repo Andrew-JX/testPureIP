@@ -48,6 +48,12 @@
       <div class="body" id="agentBody"></div>
     </section>
 
+    <section class="card" id="card-network">
+      <h2>网络稳定性 <span class="status" data-for="network"></span> <button id="rerunNetwork" class="link-btn">单独重测</button></h2>
+      <p class="card-desc">连续测量当前浏览器到 PureIP 节点的 HTTP 往返延迟、抖动和请求失败率，并提供参考下载速度；不计入 IP 纯净度总分。</p>
+      <div class="body" id="networkBody"><span class="dim">等待检测</span></div>
+    </section>
+
     <section class="card" id="card-detail">
       <h2>IP 详情 <span class="status" data-for="detail"></span></h2>
       <p class="card-desc">这个 IP 的“身份证”：归属网段、运营商域名、住宅 / 机房属性、精确位置，以及你的浏览器指纹与 WebRTC 泄漏情况。</p>

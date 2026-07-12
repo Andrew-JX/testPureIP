@@ -99,6 +99,25 @@ function globalLimit(req, res, next) {
   next();
 }
 
+// 下载测速比普通 JSON API 消耗更多带宽，单独收紧额度，避免公开站被当作流量源滥用。
+const downloadHits = new Map();
+let downloadGlobalWindow = { start: Date.now(), count: 0 };
+function downloadLimit(req, res, next) {
+  const now = Date.now();
+  if (now - downloadGlobalWindow.start > 60_000) downloadGlobalWindow = { start: now, count: 0 };
+  if (downloadGlobalWindow.count >= 60) return res.status(429).json({ error: '测速服务繁忙，请稍后重试' });
+
+  const key = clientIp(req);
+  const rec = downloadHits.get(key);
+  if (!rec || now - rec.start > 60_000) downloadHits.set(key, { start: now, count: 1 });
+  else {
+    if (rec.count >= 4) return res.status(429).json({ error: '测速过于频繁，请稍后重试' });
+    rec.count++;
+  }
+  downloadGlobalWindow.count++;
+  next();
+}
+
 // 按 IP 缓存查询结果 10 分钟：同一 IP 反复检测不再重打第三方 API
 const CACHE_TTL = 10 * 60_000;
 const CACHE_MAX = 5000; // 上限，防攻击者用海量不同 IP 撑爆内存
@@ -128,6 +147,7 @@ async function cached(key, compute) {
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of hits) if (now - v.start > 120_000) hits.delete(k);
+  for (const [k, v] of downloadHits) if (now - v.start > 120_000) downloadHits.delete(k);
   for (const [k, v] of cache) if (now - v.at > CACHE_TTL) cache.delete(k);
 }, 120_000).unref();
 
@@ -145,6 +165,27 @@ app.get('/api/config', (req, res) => {
       ['abuseipdb', 'ipqs', 'ipinfo', 'ipapiis', 'proxycheck'].map((k) => [k, Boolean(keys[k])])
     ),
   });
+});
+
+// 浏览器端网络稳定性探针。只访问本站，避免任意目标探测/SSRF；禁用缓存以确保每次都真实往返。
+app.get('/api/network/ping', (req, res) => {
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    'Timing-Allow-Origin': '*',
+  });
+  res.status(204).end();
+});
+
+// 固定大小的下载样本，用于给出当前浏览器到本站的参考吞吐；不接受用户指定大小。
+const NETWORK_SAMPLE = Buffer.alloc(512 * 1024, 0x50);
+app.get('/api/network/download', downloadLimit, (req, res) => {
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': String(NETWORK_SAMPLE.length),
+    'Timing-Allow-Origin': '*',
+  });
+  res.send(NETWORK_SAMPLE);
 });
 
 // 访客自己的真实出口 IP（公开站默认流程）。本地开发时退回服务器出口 IP。
