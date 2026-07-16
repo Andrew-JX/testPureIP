@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { Agent } from 'undici';
 import { buildDispatcher } from './src/proxy.js';
@@ -12,6 +13,8 @@ import { unlockChecks } from './src/checks/unlock.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3210;
 const HOST = process.env.HOST || '0.0.0.0';
+const PROBE_ONLY = /^(1|true)$/i.test(process.env.PROBE_ONLY || '');
+const PROBE_REGION = (process.env.PROBE_REGION || '当前节点').slice(0, 32);
 // 部署在 Render / nginx / Cloudflare 等反代后面时设 TRUST_PROXY=1，才能拿到访客真实 IP
 const TRUST_PROXY = /^(1|true)$/i.test(process.env.TRUST_PROXY || '');
 // 代理模式（/api/exit-ip、/api/unlock）会让服务器连接用户指定地址，存在 SSRF 风险，
@@ -22,9 +25,7 @@ const ENABLE_PROXY_MODE = process.env.ENABLE_PROXY_MODE
 
 // 校验是否为合法 IP（IPv4 / IPv6），防止把任意字符串拼进第三方查询 URL
 function isValidIp(ip) {
-  if (typeof ip !== 'string' || ip.length < 2 || ip.length > 45) return false;
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return ip.split('.').every((o) => Number(o) <= 255);
-  return ip.includes(':') && /^[0-9a-fA-F:]+$/.test(ip);
+  return typeof ip === 'string' && ip.length >= 2 && ip.length <= 45 && isIP(ip) > 0;
 }
 
 // key 来源：环境变量优先（托管平台用），其次本地 config.json
@@ -46,6 +47,27 @@ function loadKeys() {
   const merged = { ...fileKeys };
   for (const [k, v] of Object.entries(envKeys)) if (v) merged[k] = v;
   return merged;
+}
+
+function loadNetworkProbes() {
+  const fallback = [{ id: 'local', label: PROBE_REGION, url: '' }];
+  if (!process.env.NETWORK_PROBES_JSON) return fallback;
+  try {
+    const parsed = JSON.parse(process.env.NETWORK_PROBES_JSON);
+    if (!Array.isArray(parsed)) return fallback;
+    const probes = parsed.slice(0, 8).flatMap((item, index) => {
+      if (!item || typeof item !== 'object') return [];
+      const label = String(item.label || `节点 ${index + 1}`).slice(0, 32);
+      const url = String(item.url || '').replace(/\/+$/, '');
+      const secureUrl = /^https:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(url);
+      const localDevUrl = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(url);
+      if (url && !secureUrl && !localDevUrl) return [];
+      return [{ id: String(item.id || `probe-${index + 1}`).slice(0, 32), label, url }];
+    });
+    return probes.length ? probes : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function isPrivate(ip) {
@@ -105,13 +127,13 @@ let downloadGlobalWindow = { start: Date.now(), count: 0 };
 function downloadLimit(req, res, next) {
   const now = Date.now();
   if (now - downloadGlobalWindow.start > 60_000) downloadGlobalWindow = { start: now, count: 0 };
-  if (downloadGlobalWindow.count >= 60) return res.status(429).json({ error: '测速服务繁忙，请稍后重试' });
+  if (downloadGlobalWindow.count >= 120) return res.status(429).json({ error: '测速服务繁忙，请稍后重试' });
 
   const key = clientIp(req);
   const rec = downloadHits.get(key);
   if (!rec || now - rec.start > 60_000) downloadHits.set(key, { start: now, count: 1 });
   else {
-    if (rec.count >= 4) return res.status(429).json({ error: '测速过于频繁，请稍后重试' });
+    if (rec.count >= 8) return res.status(429).json({ error: '测速过于频繁，请稍后重试' });
     rec.count++;
   }
   downloadGlobalWindow.count++;
@@ -155,12 +177,21 @@ const app = express();
 if (TRUST_PROXY) app.set('trust proxy', true);
 app.use(express.json());
 app.use('/api', globalLimit, rateLimit);
-app.use(express.static(path.join(__dirname, 'public')));
+if (PROBE_ONLY) {
+  app.get('/', (req, res) => res.json({ service: 'PureIP network probe', region: PROBE_REGION }));
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/network/')) return next();
+    return res.status(404).json({ error: 'probe-only service' });
+  });
+} else {
+  app.use(express.static(path.join(__dirname, 'public')));
+}
 
 app.get('/api/config', (req, res) => {
   const keys = loadKeys();
   res.json({
     proxyMode: ENABLE_PROXY_MODE,
+    networkProbes: loadNetworkProbes(),
     keys: Object.fromEntries(
       ['abuseipdb', 'ipqs', 'ipinfo', 'ipapiis', 'proxycheck'].map((k) => [k, Boolean(keys[k])])
     ),
@@ -172,20 +203,31 @@ app.get('/api/network/ping', (req, res) => {
   res.set({
     'Cache-Control': 'no-store, no-cache, must-revalidate',
     'Timing-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': '*',
+    'X-PureIP-Region': encodeURIComponent(PROBE_REGION),
   });
   res.status(204).end();
 });
 
-// 固定大小的下载样本，用于给出当前浏览器到本站的参考吞吐；不接受用户指定大小。
-const NETWORK_SAMPLE = Buffer.alloc(512 * 1024, 0x50);
+// 只允许三个固定档位，兼顾渐进测速与带宽滥用防护。
+const NETWORK_SAMPLES = new Map([
+  [64 * 1024, Buffer.alloc(64 * 1024, 0x50)],
+  [256 * 1024, Buffer.alloc(256 * 1024, 0x50)],
+  [1024 * 1024, Buffer.alloc(1024 * 1024, 0x50)],
+]);
 app.get('/api/network/download', downloadLimit, (req, res) => {
+  const requested = Number(req.query.bytes);
+  const size = NETWORK_SAMPLES.has(requested) ? requested : 256 * 1024;
+  const sample = NETWORK_SAMPLES.get(size);
   res.set({
     'Cache-Control': 'no-store, no-cache, must-revalidate',
     'Content-Type': 'application/octet-stream',
-    'Content-Length': String(NETWORK_SAMPLE.length),
+    'Content-Length': String(sample.length),
     'Timing-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': '*',
+    'X-PureIP-Region': encodeURIComponent(PROBE_REGION),
   });
-  res.send(NETWORK_SAMPLE);
+  res.send(sample);
 });
 
 // 访客自己的真实出口 IP（公开站默认流程）。本地开发时退回服务器出口 IP。

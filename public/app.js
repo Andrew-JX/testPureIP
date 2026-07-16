@@ -1,6 +1,46 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+const SCENARIOS = {
+  ai: {
+    label: 'AI 工具', noun: 'AI 工具', icon: 'AI',
+    desc: '重点检查 IP 信誉、住宅属性、浏览器一致性和自动化特征。',
+    weights: { reputation: 30, identity: 25, environment: 30, region: 5, network: 5, service: 5 },
+  },
+  browse: {
+    label: '轻松上网', noun: '日常跨境浏览', icon: 'WEB',
+    desc: '重点检查网页响应、抖动、失败率、带宽和线路可达性。',
+    weights: { reputation: 15, identity: 10, environment: 10, region: 20, network: 40, service: 5 },
+  },
+  account: {
+    label: '账号 / 邮箱', noun: '账号与邮箱登录', icon: 'ID',
+    desc: '重点检查 IP 信誉、位置与浏览器环境是否像一个稳定的真实用户。',
+    weights: { reputation: 25, identity: 20, environment: 30, region: 15, network: 10, service: 0 },
+  },
+  stream: {
+    label: '看剧', noun: '流媒体观看', icon: '4K',
+    desc: '重点检查目标地区、代理识别、解锁结果、稳定带宽和缓冲风险。',
+    weights: { reputation: 10, identity: 10, environment: 5, region: 25, network: 30, service: 20 },
+  },
+  game: {
+    label: '打游戏', noun: '游戏连接', icon: 'PING',
+    desc: '重点检查目标区服延迟、负载延迟、抖动和请求失败率。',
+    weights: { reputation: 5, identity: 5, environment: 0, region: 15, network: 70, service: 5 },
+  },
+};
+
+const DIMENSION_LABELS = {
+  reputation: '信誉与滥用', identity: '网络身份', environment: '环境一致性',
+  region: '地区与可达性', network: '网络质量', service: '服务实测',
+};
+
+const appState = {
+  scenario: 'ai', mode: 'self',
+  streamService: 'netflix', streamRegion: 'US', streamQuality: '4k',
+  gameRegion: 'singapore', gameStyle: 'competitive',
+  networkProbes: [{ id: 'local', label: '当前节点', url: '' }],
+};
+
 // 国家二字码 -> 国旗 emoji
 function flag(cc) {
   if (!cc || cc.length !== 2 || !/^[a-zA-Z]{2}$/.test(cc)) return '';
@@ -116,6 +156,7 @@ function renderDetail(ip, basic, agent) {
   const asn = s.asn || com.asn || '';
   const isp = s.isp || com.isp || com.org || '';
   const meta = agent?.meta || {};
+  const hasBrowserContext = Boolean(agent?.meta);
 
   // 附加标记
   const tags = [];
@@ -124,7 +165,9 @@ function renderDetail(ip, basic, agent) {
   if (f.vpn) tags.push('<span class="tag warn">VPN</span>');
   if (f.abuser) tags.push('<span class="tag bad">滥用记录</span>');
 
-  const rtc = meta.rtcLeak
+  const rtc = !hasBrowserContext
+    ? '<span class="dim">指定 IP 模式无法检测</span>'
+    : meta.rtcLeak
     ? `<span class="bad">${esc((meta.leakedPublic || []).join(', '))}（与出口不一致，已泄漏真实 IP！）</span>`
     : meta.leakedPublic?.length
       ? `<span class="warn">${esc(meta.leakedPublic.join(', '))}（与出口一致）</span>`
@@ -140,7 +183,9 @@ function renderDetail(ip, basic, agent) {
     ['位置', esc(loc) || '<span class="dim">—</span>'],
     ['rDNS', com.rdns ? `<span class="mono">${esc(com.rdns)}</span>` : '<span class="dim">无</span>'],
     ['滥用评分', s.abuserScore ? esc(s.abuserScore) : '<span class="dim">—</span>'],
-    ['浏览器指纹', `<span class="mono">${esc(meta.fingerprint || '—')}</span> <span class="dim">（本机浏览器画像）</span>`],
+    ['浏览器指纹', hasBrowserContext
+      ? `<span class="mono">${esc(meta.fingerprint)}</span> <span class="dim">（本机浏览器画像）</span>`
+      : '<span class="dim">指定 IP 模式无法检测</span>'],
     ['WebRTC 泄漏', rtc],
   ];
 
@@ -243,20 +288,22 @@ function renderUnlock(data) {
   $('unlockBody').innerHTML = `<div class="unlock-grid">${items.join('')}</div>`;
 }
 
-/* ---------- 网络稳定性（浏览器 -> PureIP 节点） ---------- */
+/* ---------- 网络稳定性（空闲 + 负载 + 区域节点） ---------- */
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const average = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 
-async function timedFetch(url, timeout = 3000) {
+async function timedFetch(url, timeout = 3500, readBody = false) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   const started = performance.now();
   try {
     const res = await fetch(url, { cache: 'no-store', signal: controller.signal });
     if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
-    return { ok: true, rtt: performance.now() - started, res };
+    const bytes = readBody ? (await res.arrayBuffer()).byteLength : 0;
+    return { ok: true, rtt: performance.now() - started, bytes, res };
   } catch (error) {
-    return { ok: false, rtt: null, error };
+    return { ok: false, rtt: null, bytes: 0, error };
   } finally {
     clearTimeout(timer);
   }
@@ -268,40 +315,61 @@ function percentile(values, ratio) {
   return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1)];
 }
 
-function networkScore(avg, jitter, loss) {
-  const latencyPenalty = avg <= 80 ? 0 : Math.min(25, (avg - 80) / 8);
-  const jitterPenalty = jitter <= 12 ? 0 : Math.min(30, (jitter - 12) * 1.2);
-  return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - loss * 0.55));
+function summarizeSamples(samples, total = samples.length) {
+  const rtts = samples.filter((sample) => sample.ok).map((sample) => sample.rtt);
+  if (!rtts.length) return { available: false, rtts: [], success: 0, total, loss: 100 };
+  const jitter = rtts.length < 2 ? 0 : average(rtts.slice(1).map((value, index) => Math.abs(value - rtts[index])));
+  return {
+    available: true, rtts, success: rtts.length, total,
+    avg: average(rtts), min: Math.min(...rtts), p95: percentile(rtts, 0.95), jitter,
+    loss: ((total - rtts.length) / total) * 100,
+  };
+}
+
+async function sampleLatency(baseUrl = '', count = 8, spacing = 180, phase = 'idle') {
+  const base = baseUrl.replace(/\/$/, '');
+  const calls = Array.from({ length: count }, (_, index) =>
+    wait(index * spacing).then(() => timedFetch(`${base}/api/network/ping?t=${Date.now()}-${phase}-${index}`))
+  );
+  return summarizeSamples(await Promise.all(calls), count);
+}
+
+function networkScore(avg, jitter, loss, loadedAvg = avg) {
+  const latencyPenalty = avg <= 70 ? 0 : Math.min(25, (avg - 70) / 7);
+  const jitterPenalty = jitter <= 10 ? 0 : Math.min(25, (jitter - 10) * 1.1);
+  const loadedPenalty = loadedAvg <= avg + 60 ? 0 : Math.min(25, (loadedAvg - avg - 60) / 8);
+  return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - loadedPenalty - loss * 0.5));
+}
+
+async function measureRegionalProbes(localSummary) {
+  return Promise.all(appState.networkProbes.map(async (probe) => {
+    if (!probe.url) return { ...probe, ...localSummary, score: networkScore(localSummary.avg, localSummary.jitter, localSummary.loss) };
+    const summary = await sampleLatency(probe.url, 5, 160, probe.id);
+    return { ...probe, ...summary, score: summary.available ? networkScore(summary.avg, summary.jitter, summary.loss) : 0 };
+  }));
 }
 
 async function measureNetwork() {
-  const sampleCount = 12;
-  // 定时发起而非串行等待，避免一次超时把整次检测拖得过长。
-  const probes = Array.from({ length: sampleCount }, (_, i) =>
-    wait(i * 250).then(() => timedFetch(`/api/network/ping?t=${Date.now()}-${i}`))
+  const idle = await sampleLatency('', 10, 180, 'idle');
+  if (!idle.available) throw new Error('所有网络探针均失败，请检查连接后重试');
+
+  const loadStarted = performance.now();
+  const downloads = [0, 1, 2].map((index) =>
+    timedFetch(`/api/network/download?bytes=1048576&t=${Date.now()}-${index}`, 12000, true)
   );
-  const samples = await Promise.all(probes);
-  const rtts = samples.filter((s) => s.ok).map((s) => s.rtt);
-  if (!rtts.length) throw new Error('所有网络探针均失败，请检查连接后重试');
-
-  const avg = rtts.reduce((sum, n) => sum + n, 0) / rtts.length;
-  const jitter = rtts.length < 2 ? 0 : rtts.slice(1)
-    .reduce((sum, n, i) => sum + Math.abs(n - rtts[i]), 0) / (rtts.length - 1);
-  const loss = ((sampleCount - rtts.length) / sampleCount) * 100;
-
-  let downloadMbps = null;
-  const downloadStarted = performance.now();
-  const download = await timedFetch(`/api/network/download?t=${Date.now()}`, 8000);
-  if (download.ok) {
-    const bytes = (await download.res.arrayBuffer()).byteLength;
-    const seconds = (performance.now() - downloadStarted) / 1000;
-    if (seconds > 0) downloadMbps = (bytes * 8) / seconds / 1_000_000;
-  }
+  const loadedPromise = sampleLatency('', 8, 130, 'loaded');
+  const [downloadResults, loaded] = await Promise.all([Promise.all(downloads), loadedPromise]);
+  const loadSeconds = (performance.now() - loadStarted) / 1000;
+  const totalBytes = downloadResults.reduce((sum, item) => sum + item.bytes, 0);
+  const downloadMbps = totalBytes && loadSeconds > 0 ? (totalBytes * 8) / loadSeconds / 1_000_000 : null;
+  const loadedAvg = loaded.available ? loaded.avg : idle.avg;
+  const regions = await measureRegionalProbes(idle);
 
   return {
-    score: networkScore(avg, jitter, loss),
-    avg, jitter, loss, min: Math.min(...rtts), p95: percentile(rtts, 0.95),
-    success: rtts.length, total: sampleCount, downloadMbps, rtts,
+    score: networkScore(idle.avg, idle.jitter, idle.loss, loadedAvg),
+    avg: idle.avg, jitter: idle.jitter, loss: idle.loss, min: idle.min, p95: idle.p95,
+    success: idle.success, total: idle.total, downloadMbps, rtts: idle.rtts,
+    loadedAvg, loadedJitter: loaded.jitter ?? null, regions,
   };
 }
 
@@ -309,33 +377,45 @@ function renderNetwork(data) {
   const cls = data.score >= 90 ? 'good' : data.score >= 70 ? 'warn' : 'bad';
   const grade = data.score >= 90 ? '稳定' : data.score >= 75 ? '良好' : data.score >= 55 ? '一般' : '不稳定';
   const max = Math.max(1, ...data.rtts);
-  const bars = data.rtts.map((n) =>
-    `<i style="height:${Math.max(8, Math.round(n / max * 100))}%" title="${Math.round(n)} ms"></i>`
+  const bars = data.rtts.map((value) =>
+    `<i style="height:${Math.max(8, Math.round(value / max * 100))}%" title="${Math.round(value)} ms"></i>`
   ).join('');
   const speed = data.downloadMbps == null ? '测试失败' : `${data.downloadMbps.toFixed(1)} Mbps`;
+  const regions = (data.regions || []).map((region) => region.available
+    ? `<div class="region-probe"><span>${esc(region.label)}</span><b>${Math.round(region.avg)} ms</b><small>抖动 ${Math.round(region.jitter)} ms</small></div>`
+    : `<div class="region-probe unavailable"><span>${esc(region.label)}</span><b>不可达</b><small>未计入评分</small></div>`
+  ).join('');
   $('networkBody').innerHTML = `
     <div class="network-head">
       <div class="network-score ${cls}">${data.score}<span>/100</span></div>
-      <div><div class="network-grade ${cls}">${grade}</div><div class="dim">浏览器到本站节点 · ${data.success}/${data.total} 次成功</div></div>
+      <div><div class="network-grade ${cls}">${grade}</div><div class="dim">空闲与负载双阶段采样 · ${data.success}/${data.total} 次成功</div></div>
     </div>
     <div class="network-metrics">
-      <div><b>${Math.round(data.avg)} ms</b><span>平均延迟</span></div>
-      <div><b>${Math.round(data.jitter)} ms</b><span>抖动</span></div>
+      <div><b>${Math.round(data.avg)} ms</b><span>空闲延迟</span></div>
+      <div><b>${Math.round(data.loadedAvg)} ms</b><span>负载延迟</span></div>
+      <div><b>${Math.round(data.jitter)} ms</b><span>空闲抖动</span></div>
       <div><b class="${data.loss > 0 ? 'bad' : ''}">${data.loss.toFixed(1)}%</b><span>HTTP 失败率</span></div>
       <div><b>${Math.round(data.p95)} ms</b><span>P95 延迟</span></div>
-      <div><b>${speed}</b><span>参考下载</span></div>
+      <div><b>${speed}</b><span>并发下载</span></div>
     </div>
     <div class="latency-chart" aria-label="延迟采样图">${bars}</div>
-    <div class="network-note dim">最低 ${Math.round(data.min)} ms。HTTP 失败率是网页体验层近似值，不等同于 ICMP 丢包；结果会受 PureIP 节点距离和服务端瞬时负载影响。</div>`;
+    ${regions ? `<div class="region-title">区域节点</div><div class="region-probes">${regions}</div>` : ''}
+    <div class="network-note dim">HTTP 失败率是网页体验层近似值，不等同于 ICMP 丢包；休眠中的免费区域节点首次请求可能包含冷启动时间。</div>`;
+}
+
+function renderNetworkUnavailable() {
+  setStatus('network', 'done');
+  $('networkBody').innerHTML = '<div class="unavailable-panel"><b>指定 IP 无法实测网络质量</b><span>延迟、抖动和带宽属于“你到目标节点的链路”，只输入一个 IP 无法从浏览器代替它发起连接。切换到“当前网络”可完整测试。</span></div>';
 }
 
 let networkRunning = false;
 async function runNetworkStability() {
+  if (appState.mode === 'manual') { renderNetworkUnavailable(); return null; }
   if (networkRunning) return null;
   networkRunning = true;
   $('rerunNetwork').disabled = true;
   setStatus('network', 'loading');
-  $('networkBody').innerHTML = '<span class="dim">正在连续采样，约需 3–10 秒…</span>';
+  $('networkBody').innerHTML = '<span class="dim">正在进行空闲、负载与区域采样，约需 6–15 秒…</span>';
   try {
     const result = await measureNetwork();
     renderNetwork(result);
@@ -498,113 +578,212 @@ function renderAgent(agent) {
     <div class="signal-list">${rows.join('')}</div>`;
 }
 
-/* ---------- 结论与建议（大白话总结 + 可操作项） ---------- */
+/* ---------- 场景化证据、评分与结论 ---------- */
 
-function renderVerdict(total, grade, agent, results) {
-  const overall =
-    total >= 85 ? { cls: 'good', text: '这个 IP 很干净，可放心用于注册 / 登录 Claude、ChatGPT 等对 IP 敏感的服务。' } :
-    total >= 70 ? { cls: 'good', text: '基本可用。有少量风险点（见下），敏感操作前建议先优化。' } :
-    total >= 55 ? { cls: 'warn', text: '质量一般。登录 AI 服务可能偶发验证码，不建议用于重要 / 长期账号。' } :
-                  { cls: 'bad', text: '风险较高，容易被 AI 服务拦截或风控。建议更换 IP，或先修复下面的问题。' };
+function getPrimaryCountry(basic) {
+  const sources = basic?.sources || {};
+  const source = [sources['ipapi.is'], sources['ip-api.com'], sources['ipwho.is'], sources['ipinfo Lite']]
+    .find((item) => item && !item.error && item.countryCode) || {};
+  return String(source.countryCode || '').toUpperCase();
+}
 
-  // 收集问题：AI Agent 的 bad/warn 信号（自带建议）+ DNS 黑名单命中
-  const issues = [];
-  (agent?.signals || []).forEach((s) => {
-    if ((s.level === 'bad' || s.level === 'warn') && s.advice) {
-      issues.push({ level: s.level, label: s.label, advice: s.advice });
-    }
-  });
-  const db = results?.dnsbl;
-  if (db?.supported && db.listedCount > 0) {
-    issues.push({
-      level: 'bad',
-      label: `IP 命中 ${db.listedCount} 个 DNS 黑名单`,
-      advice: '这个 IP 被人发过垃圾邮件 / 滥用过（常见于被很多人共用的“万人骑”IP），换一个独享的干净 IP 更安全。',
-    });
+function getCountryAgreement(basic) {
+  const countries = Object.values(basic?.sources || {})
+    .filter((source) => source && !source.error && source.countryCode)
+    .map((source) => String(source.countryCode).toUpperCase());
+  if (!countries.length) return null;
+  const counts = countries.reduce((map, country) => map.set(country, (map.get(country) || 0) + 1), new Map());
+  return Math.round(Math.max(...counts.values()) / countries.length * 100);
+}
+
+function dnsblCleanScore(dnsbl) {
+  if (!dnsbl?.supported) return null;
+  if (dnsbl.listedCount >= 2) return 10;
+  if (dnsbl.listedCount === 1) return 45;
+  const checked = dnsbl.checkedCount ?? 0;
+  return checked >= 5 ? 100 : checked >= 3 ? 88 : checked >= 1 ? 75 : 55;
+}
+
+function reputationScore(risk, dnsbl) {
+  const scores = [risk?.proxycheck?.score, risk?.abuseipdb?.score, risk?.ipqs?.score, risk?.ipapiis?.score]
+    .filter((value) => typeof value === 'number');
+  let clean = scores.length ? 100 - average(scores) : null;
+  const idb = risk?.internetdb;
+  if (clean != null && idb && !idb.error && !idb.clean) {
+    if (proxyPorts(idb.ports || []) || /proxy|vpn/i.test((idb.tags || []).join())) clean -= 35;
+    else if (idb.vulns?.length) clean -= 15;
   }
-  // 按严重度排序（bad 在前）
-  issues.sort((a, b) => (a.level === 'bad' ? 0 : 1) - (b.level === 'bad' ? 0 : 1));
+  const blacklist = dnsblCleanScore(dnsbl);
+  if (clean == null) return blacklist;
+  if (blacklist == null) return Math.max(0, clean);
+  return Math.max(0, clean * 0.75 + blacklist * 0.25);
+}
 
-  const issueHtml = issues.length
-    ? issues.slice(0, 6).map((i) =>
-        `<li class="issue ${i.level}"><b>${esc(i.label)}</b><span>${esc(i.advice)}</span></li>`).join('')
-    : '<li class="issue good"><b>没有发现明显风险点</b><span>各项指标正常，可以放心使用。</span></li>';
+function identityScore(basic) {
+  if (!basic?.sources) return null;
+  let score = 100;
+  const rawSource = basic.sources['ipapi.is'];
+  const rawCommon = basic.sources['ip-api.com'];
+  const sourceAvailable = rawSource && !rawSource.error && !rawSource.skipped;
+  const commonAvailable = rawCommon && !rawCommon.error && !rawCommon.skipped;
+  if (!sourceAvailable && !commonAvailable) return null;
+  const source = sourceAvailable ? rawSource : {};
+  const flags = source.flags || {};
+  const common = commonAvailable ? rawCommon.flags || {} : {};
+  if (common.hosting || flags.datacenter || source.companyType === 'hosting') score -= 45;
+  if (common.proxy || flags.proxy) score -= 30;
+  if (flags.vpn) score -= 15;
+  if (flags.tor) score -= 60;
+  if (flags.mobile || source.companyType === 'isp') score = Math.min(100, score + 10);
+  return Math.max(0, score);
+}
 
-  $('verdictBody').innerHTML = `
-    <div class="verdict-overall ${overall.cls}">${esc(overall.text)}</div>
-    <div class="verdict-sub dim">${issues.length ? '检测到的风险点与建议：' : ''}</div>
-    <ul class="issue-list">${issueHtml}</ul>`;
+function targetRegionScore(basic, network) {
+  const country = getPrimaryCountry(basic);
+  if (appState.scenario === 'stream') return country ? (country === appState.streamRegion ? 100 : 42) : null;
+  if (appState.scenario === 'game') {
+    const region = network?.regions?.find((item) => item.id === appState.gameRegion);
+    return region?.available ? Math.max(25, region.score) : null;
+  }
+  const agreement = getCountryAgreement(basic);
+  return agreement == null ? null : Math.max(60, agreement);
+}
+
+function selectedNetworkScore(network) {
+  if (!network) return null;
+  if (appState.scenario === 'stream') {
+    const required = { '720p': 3, '1080p': 5, '4k': 15 }[appState.streamQuality];
+    const throughput = network.downloadMbps == null ? null : Math.min(100, network.downloadMbps / required * 100);
+    return throughput == null ? network.score : Math.round(network.score * 0.7 + throughput * 0.3);
+  }
+  if (appState.scenario !== 'game') return network.score;
+  const region = network.regions?.find((item) => item.id === appState.gameRegion);
+  if (!region?.available) return network.score;
+  if (appState.gameStyle === 'competitive') {
+    const latencyPenalty = Math.max(0, region.avg - 35) * 0.65;
+    const jitterPenalty = Math.max(0, region.jitter - 8) * 1.8;
+    return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - region.loss * 8));
+  }
+  if (appState.gameStyle === 'cloud') {
+    const latencyPenalty = Math.max(0, region.avg - 45) * 0.7;
+    const loadedPenalty = Math.max(0, network.loadedAvg - 80) * 0.25;
+    const bandwidthPenalty = network.downloadMbps == null ? 15 : Math.max(0, 25 - network.downloadMbps) * 1.2;
+    return Math.max(0, Math.round(100 - latencyPenalty - loadedPenalty - bandwidthPenalty - region.loss * 6));
+  }
+  const latencyPenalty = Math.max(0, region.avg - 90) * 0.35;
+  const jitterPenalty = Math.max(0, region.jitter - 20);
+  return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - region.loss * 5));
+}
+
+function serviceScore(unlock, network) {
+  const value = (status) => ({ yes: 100, partial: 55, no: 0 }[status] ?? null);
+  if (appState.scenario === 'ai' && unlock) {
+    const values = [value(unlock.claude?.status), value(unlock.chatgpt?.status)].filter((item) => item != null);
+    return values.length ? average(values) : null;
+  }
+  if (appState.scenario === 'stream' && unlock) {
+    const map = { netflix: 'netflix', disney: 'disneyPlus', youtube: 'youtubePremium' };
+    return value(unlock[map[appState.streamService]]?.status);
+  }
+  if (appState.scenario === 'game') {
+    const region = network?.regions?.find((item) => item.id === appState.gameRegion);
+    return region?.available ? 100 : null;
+  }
+  return null;
+}
+
+function buildScenarioScore(results) {
+  const profile = SCENARIOS[appState.scenario];
+  const values = {
+    reputation: reputationScore(results.risk, results.dnsbl),
+    identity: identityScore(results.basic),
+    environment: results.agent?.score ?? null,
+    region: targetRegionScore(results.basic, results.network),
+    network: selectedNetworkScore(results.network),
+    service: serviceScore(results.unlock, results.network),
+  };
+  const dimensions = Object.entries(profile.weights).map(([key, weight]) => ({
+    key, label: DIMENSION_LABELS[key], weight, score: values[key], available: values[key] != null || weight === 0,
+  }));
+  const relevant = dimensions.filter((item) => item.weight > 0);
+  const known = relevant.filter((item) => item.available);
+  const knownWeight = known.reduce((sum, item) => sum + item.weight, 0);
+  const weightedKnown = known.reduce((sum, item) => sum + item.score * item.weight / 100, 0);
+  const estimate = knownWeight ? Math.round(weightedKnown * 100 / knownWeight) : 0;
+  const missingWeight = 100 - knownWeight;
+  const range = [Math.round(weightedKnown), Math.round(Math.min(100, weightedKnown + missingWeight))];
+  const confidence = knownWeight >= 90 ? 'high' : knownWeight >= 60 ? 'medium' : 'low';
+  const grade = estimate >= 85 ? '非常适合' : estimate >= 70 ? '适合' : estimate >= 55 ? '勉强可用' : '不推荐';
+  const cls = estimate >= 75 ? 'good' : estimate >= 55 ? 'warn' : 'bad';
+  return { profile, dimensions, estimate, knownWeight, missingWeight, range, confidence, grade, cls };
+}
+
+function renderScenarioEvidence(score, results) {
+  $('scenarioEvidenceTitle').childNodes[0].nodeValue = `${score.profile.label}关键证据 `;
+  $('scenarioEvidenceDesc').textContent = score.profile.desc;
+  const rows = score.dimensions.filter((item) => item.weight > 0).sort((a, b) => b.weight - a.weight).map((item) => {
+    const cls = !item.available ? 'dim' : item.score >= 75 ? 'good' : item.score >= 55 ? 'warn' : 'bad';
+    const value = item.available ? Math.round(item.score) : '未测';
+    return `<div class="evidence-row ${cls}">
+      <div><b>${esc(item.label)}</b><small>权重 ${item.weight}%</small></div>
+      <div class="evidence-track"><i style="width:${item.available ? Math.max(3, item.score) : 0}%"></i></div>
+      <strong>${value}</strong>
+    </div>`;
+  }).join('');
+  const importantSignals = (results.agent?.signals || []).filter((item) => item.level === 'bad' || item.level === 'warn').slice(0, 4);
+  const signals = importantSignals.length ? `<div class="scenario-signals">${importantSignals.map((item) =>
+    `<span class="tag ${item.level}">${esc(item.label)}</span>`).join('')}</div>` : '';
+  $('agentBody').innerHTML = `<div class="evidence-list">${rows}</div>${signals}`;
+  setStatus('agent', 'done');
+}
+
+function renderVerdict(score, results, reportMode = appState.mode) {
+  const modeText = reportMode === 'manual' ? 'IP 侧预评估' : reportMode === 'proxy' ? '代理出口预评估' : '当前网络实测';
+  const overall = score.estimate >= 85
+    ? `${modeText}显示：它很适合${score.profile.noun}。`
+    : score.estimate >= 70
+      ? `${modeText}显示：它基本适合${score.profile.noun}，仍有少量可优化项。`
+      : score.estimate >= 55
+        ? `${modeText}显示：可以使用，但体验或风控稳定性一般。`
+        : `${modeText}显示：不建议直接用于${score.profile.noun}。`;
+  const issues = [];
+  (results.agent?.signals || []).forEach((item) => {
+    if ((item.level === 'bad' || item.level === 'warn') && item.advice) issues.push(item);
+  });
+  if (results.dnsbl?.listedCount > 0) issues.push({ level: 'bad', label: `命中 ${results.dnsbl.listedCount} 个黑名单`, advice: '该 IP 有滥用历史，重要账号和敏感服务建议更换出口。' });
+  if (results.network && results.network.loadedAvg > results.network.avg + 100) issues.push({ level: 'warn', label: '负载延迟明显升高', advice: '下载占满线路时网页或游戏可能卡顿，建议启用路由器 QoS/SQM。' });
+  if (results.network?.loss > 0) issues.push({ level: 'warn', label: '检测到请求失败', advice: '线路存在瞬时不稳定，建议复测并检查 Wi-Fi、代理节点或运营商线路。' });
+  const region = score.dimensions.find((item) => item.key === 'region');
+  if (region?.available && region.score < 55) issues.push({ level: 'bad', label: '出口与目标地区不匹配', advice: '请选择与目标服务或区服更接近的出口节点。' });
+  if (score.missingWeight > 0) issues.push({ level: 'warn', label: `仍有 ${score.missingWeight}% 权重未实测`, advice: `当前可信度为${score.confidence === 'high' ? '高' : score.confidence === 'medium' ? '中' : '低'}；未测项不会按满分处理。` });
+
+  if (appState.scenario === 'stream' && results.network?.downloadMbps != null) {
+    const required = { '720p': 3, '1080p': 5, '4k': 15 }[appState.streamQuality];
+    if (results.network.downloadMbps < required) issues.unshift({ level: 'bad', label: `带宽不足以稳定播放 ${appState.streamQuality.toUpperCase()}`, advice: `当前约 ${results.network.downloadMbps.toFixed(1)} Mbps，目标建议至少 ${required} Mbps。` });
+  }
+
+  const unique = issues.filter((item, index, list) => list.findIndex((other) => other.label === item.label) === index).slice(0, 6);
+  const issueHtml = unique.length ? unique.map((item) =>
+    `<li class="issue ${item.level}"><b>${esc(item.label)}</b><span>${esc(item.advice)}</span></li>`).join('')
+    : '<li class="issue good"><b>没有发现明显问题</b><span>当前已测指标适合这一使用场景。</span></li>';
+  $('verdictBody').innerHTML = `<div class="verdict-overall ${score.cls}">${esc(overall)}</div><div class="verdict-sub dim">最值得关注的事项：</div><ul class="issue-list">${issueHtml}</ul>`;
   $('card-verdict').classList.remove('hidden');
 }
 
-/* ---------- 综合评分 ---------- */
-
-function computeScore(basic, risk, dnsbl, unlock, agent) {
-  const parts = {};
-
-  const scores = [risk?.proxycheck?.score, risk?.abuseipdb?.score, risk?.ipqs?.score, risk?.ipapiis?.score]
-    .filter((v) => typeof v === 'number');
-  parts.risk = scores.length ? 100 - scores.reduce((a, b) => a + b, 0) / scores.length : 60;
-  const idb = risk?.internetdb;
-  if (idb && !idb.error && !idb.clean) {
-    if (proxyPorts(idb.ports) || /proxy|vpn/i.test((idb.tags || []).join())) parts.risk -= 35;
-    else if (idb.vulns?.length) parts.risk -= 15;
-  }
-  parts.risk = Math.max(0, parts.risk);
-
-  let type = 100;
-  const srcs = basic?.sources || {};
-  const ipapiFlags = srcs['ipapi.is']?.flags || {};
-  const ipapiCom = srcs['ip-api.com']?.flags || {};
-  if (ipapiCom.hosting || ipapiFlags.datacenter || srcs['ipapi.is']?.companyType === 'hosting') type -= 45;
-  if (ipapiCom.proxy || ipapiFlags.proxy) type -= 30;
-  if (ipapiFlags.vpn) type -= 15;
-  if (ipapiFlags.tor) type -= 60;
-  if (ipapiFlags.mobile || srcs['ipapi.is']?.companyType === 'isp') type = Math.min(100, type + 10);
-  parts.type = Math.max(0, type);
-
-  // DNS 黑名单：命中扣分；命中 0 时按"有效查询覆盖度"给分，覆盖太低不给满分（防假阴性）
-  if (!dnsbl?.supported) {
-    parts.dnsbl = 70;
-  } else if (dnsbl.listedCount >= 2) {
-    parts.dnsbl = 10;
-  } else if (dnsbl.listedCount === 1) {
-    parts.dnsbl = 45;
-  } else {
-    const checked = dnsbl.checkedCount ?? 0;
-    parts.dnsbl = checked >= 5 ? 100 : checked >= 3 ? 88 : checked >= 1 ? 75 : 55;
-  }
-  parts.agent = agent?.score ?? 60;
-
-  if (unlock) {
-    const u = (st) => ({ yes: 100, partial: 50, no: 0 }[st] ?? 60);
-    parts.unlock = u(unlock.claude?.status) * 0.6 + u(unlock.chatgpt?.status) * 0.4;
-    // 代理模式：含实测解锁
-    const total = Math.round(parts.risk * 0.32 + parts.type * 0.22 + parts.dnsbl * 0.12 + parts.agent * 0.14 + parts.unlock * 0.2);
-    return { total, parts, hasUnlock: true };
-  }
-  // 自测模式：无实测解锁，AI Agent 权重更高
-  const total = Math.round(parts.risk * 0.36 + parts.type * 0.26 + parts.dnsbl * 0.14 + parts.agent * 0.24);
-  return { total, parts, hasUnlock: false };
-}
-
 function renderScore(ip, score) {
-  const { total, parts, hasUnlock } = score;
-  const cls = total >= 80 ? 'good' : total >= 55 ? 'warn' : 'bad';
-  const grade = total >= 85 ? '纯净' : total >= 70 ? '良好' : total >= 55 ? '一般' : total >= 35 ? '较差' : '高风险预警';
-  $('scoreNum').textContent = total;
-  document.querySelector('.gauge').className = `gauge ${cls}`;
-  $('scoreGrade').textContent = grade;
+  $('scoreNum').textContent = score.estimate;
+  document.querySelector('.gauge').className = `gauge ${score.cls}`;
+  $('scoreGrade').textContent = `${score.profile.label} · ${score.grade}`;
   $('scoreIp').textContent = ip;
-  const bits = [
-    `<span>风险 ${Math.round(parts.risk)}</span>`,
-    `<span>IP 类型 ${Math.round(parts.type)}</span>`,
-    `<span>黑名单 ${Math.round(parts.dnsbl)}</span>`,
-    `<span>AI Agent ${Math.round(parts.agent)}</span>`,
-  ];
-  if (hasUnlock) bits.push(`<span>解锁 ${Math.round(parts.unlock)}</span>`);
-  $('scoreBreakdown').innerHTML = bits.join('');
-  return grade;
+  $('scoreScenario').textContent = score.profile.label;
+  $('scoreConfidence').className = `tag ${score.confidence === 'high' ? 'good' : score.confidence === 'medium' ? 'warn' : 'bad'}`;
+  $('scoreConfidence').textContent = `可信度${score.confidence === 'high' ? '高' : score.confidence === 'medium' ? '中' : '低'} · 已测 ${score.knownWeight}%`;
+  $('scoreBreakdown').innerHTML = score.dimensions.filter((item) => item.weight > 0).map((item) =>
+    `<span>${esc(item.label)} ${item.available ? Math.round(item.score) : '未测'}</span>`).join('');
+  $('scoreLegend').textContent = score.missingWeight
+    ? `显示的是已知证据预评估；完整得分合理区间约 ${score.range[0]}–${score.range[1]}，缺失项没有按满分处理。`
+    : '当前场景所需维度已完整检测，分数可直接用于比较。';
+  return score.grade;
 }
 
 /* ---------- 历史 ---------- */
@@ -621,8 +800,8 @@ function renderHistory() {
           <span class="history-score" style="color:var(--${c})">${h.total}</span>
           <span class="mono">${esc(h.ip)}</span>
           <span>${esc(h.location || '')}</span>
-          <span class="tag dim">${esc(h.grade)}</span>
-          <span class="dim">${esc(h.proxy || '自测')}</span>
+          <span class="tag dim">${esc(h.scenario || 'AI 工具')} · ${esc(h.grade)}</span>
+          <span class="dim">${esc(h.mode || (h.proxy ? '代理实测' : '当前网络'))}</span>
           <span class="dim">${new Date(h.time).toLocaleString()}</span>
         </div>`;
       }).join('')
@@ -639,11 +818,109 @@ function saveHistory(entry) {
 /* ---------- 主流程 ---------- */
 
 let running = false;
+let lastReport = null;
+
+function validManualIp(value) {
+  const ip = value.trim();
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+    const octets = ip.split('.').map(Number);
+    if (!octets.every((value) => value >= 0 && value <= 255)) return false;
+    if (octets[0] === 0 || octets[0] === 10 || octets[0] === 127 || octets[0] >= 224) return false;
+    if (octets[0] === 192 && octets[1] === 168) return false;
+    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return false;
+    if (octets[0] === 169 && octets[1] === 254) return false;
+    return true;
+  }
+  if (!ip.includes(':') || !/^[0-9a-f:]+$/i.test(ip)) return false;
+  if (ip.split('::').length > 2) return false;
+  const groups = ip.split(':').filter(Boolean);
+  const compressed = ip.includes('::');
+  if ((!compressed && groups.length !== 8) || (compressed && groups.length >= 8)) return false;
+  if (!groups.every((group) => group.length <= 4)) return false;
+  return !/^::$|^::1$|^f[cd]|^fe[89ab]/i.test(ip);
+}
+
+function showInputError(message = '') {
+  $('inputError').textContent = message;
+  $('inputError').classList.toggle('hidden', !message);
+}
+
+function renderScenarioOptions() {
+  const panel = $('scenarioOptions');
+  if (appState.scenario === 'stream') {
+    panel.classList.remove('hidden');
+    panel.innerHTML = `
+      <label>服务<select id="streamService"><option value="netflix">Netflix</option><option value="disney">Disney+</option><option value="youtube">YouTube Premium</option></select></label>
+      <label>目标地区<select id="streamRegion"><option value="US">美国</option><option value="JP">日本</option><option value="SG">新加坡</option><option value="GB">英国</option></select></label>
+      <label>目标画质<select id="streamQuality"><option value="720p">720p</option><option value="1080p">1080p</option><option value="4k">4K</option></select></label>`;
+    $('streamService').value = appState.streamService;
+    $('streamRegion').value = appState.streamRegion;
+    $('streamQuality').value = appState.streamQuality;
+    ['streamService', 'streamRegion', 'streamQuality'].forEach((id) => $(id).addEventListener('change', (event) => {
+      appState[id] = event.target.value;
+      rerenderLastReport();
+    }));
+    return;
+  }
+  if (appState.scenario === 'game') {
+    panel.classList.remove('hidden');
+    const regionOptions = appState.networkProbes.map((probe) => `<option value="${esc(probe.id)}">${esc(probe.label)}</option>`).join('');
+    if (!appState.networkProbes.some((probe) => probe.id === appState.gameRegion)) appState.gameRegion = appState.networkProbes[0]?.id || 'local';
+    panel.innerHTML = `
+      <label>目标区服<select id="gameRegion">${regionOptions}</select></label>
+      <label>游戏类型<select id="gameStyle"><option value="competitive">竞技游戏</option><option value="casual">休闲游戏</option><option value="cloud">云游戏</option></select></label>`;
+    $('gameRegion').value = appState.gameRegion;
+    $('gameStyle').value = appState.gameStyle;
+    $('gameRegion').addEventListener('change', (event) => { appState.gameRegion = event.target.value; rerenderLastReport(); });
+    $('gameStyle').addEventListener('change', (event) => { appState.gameStyle = event.target.value; rerenderLastReport(); });
+    return;
+  }
+  panel.classList.add('hidden');
+  panel.innerHTML = '';
+}
+
+function setScenario(scenario) {
+  if (!SCENARIOS[scenario]) return;
+  appState.scenario = scenario;
+  document.querySelectorAll('.scenario-option').forEach((button) => button.classList.toggle('active', button.dataset.scenario === scenario));
+  renderScenarioOptions();
+  rerenderLastReport();
+}
+
+function setMode(mode) {
+  if (!['self', 'manual'].includes(mode)) return;
+  appState.mode = mode;
+  document.querySelectorAll('#modeSwitch button').forEach((button) => button.classList.toggle('active', button.dataset.mode === mode));
+  $('ipInput').classList.toggle('hidden', mode !== 'manual');
+  $('run').textContent = mode === 'manual' ? '检测这个 IP' : '检测当前网络';
+  $('modeHint').textContent = mode === 'manual'
+    ? '只评估指定 IP 的信誉、类型和地区；浏览器环境与网络质量会标记为未实测'
+    : '将检测当前出口 IP、浏览器环境、负载延迟与区域线路';
+  showInputError();
+  lastReport = null;
+  $('report').classList.add('hidden');
+}
+
+function rerenderLastReport() {
+  if (!lastReport) return;
+  const score = buildScenarioScore(lastReport.results);
+  renderScore(lastReport.ip, score);
+  renderScenarioEvidence(score, lastReport.results);
+  renderVerdict(score, lastReport.results, lastReport.mode);
+}
 
 async function run(proxy) {
   if (running) return;
-  running = true;
   const useProxy = Boolean(proxy && proxy.trim());
+  const reportMode = useProxy ? 'proxy' : appState.mode;
+  const manualIp = $('ipInput').value.trim();
+  if (reportMode === 'manual' && !validManualIp(manualIp)) {
+    showInputError('请输入有效的公网 IPv4 或 IPv6 地址');
+    $('ipInput').focus();
+    return;
+  }
+  showInputError();
+  running = true;
   $('run').disabled = true;
   $('runProxy').disabled = true;
   $('report').classList.remove('hidden');
@@ -656,11 +933,14 @@ async function run(proxy) {
   document.querySelector('.gauge').className = 'gauge';
 
   try {
-    const { ip } = useProxy ? await post('/api/exit-ip', { proxy }) : await post('/api/self', {});
+    const ip = reportMode === 'manual'
+      ? manualIp
+      : (useProxy ? await post('/api/exit-ip', { proxy }) : await post('/api/self', {})).ip;
     if (!ip) throw new Error('无法确定出口 IP');
     $('scoreIp').textContent = ip;
 
     const results = {};
+    const canClientTest = reportMode === 'self';
     const basicP = post('/api/basic', { ip })
       .then((d) => { results.basic = d; renderBasic(d); setStatus('basic', 'done'); return d; })
       .catch((e) => { setStatus('basic', 'error'); $('basicBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`; return null; });
@@ -671,12 +951,9 @@ async function run(proxy) {
         .catch((e) => { setStatus('risk', 'error'); $('riskBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`; })
     );
 
-    // AI Agent 分析依赖基础信息里的地理数据；IP 详情同时用到 basic + agent(指纹/WebRTC)
-    const agentP = basicP.then(async (b) => {
-      results.agent = await analyzeAgent(ip, b);
-      renderAgent(results.agent);
-      setStatus('agent', 'done');
-      renderDetail(ip, b, results.agent);
+    const agentP = basicP.then(async (basic) => {
+      if (canClientTest) results.agent = await analyzeAgent(ip, basic);
+      renderDetail(ip, basic, results.agent);
       setStatus('detail', 'done');
     }).catch((e) => {
       setStatus('agent', 'error'); setStatus('detail', 'error');
@@ -687,7 +964,9 @@ async function run(proxy) {
       .then((d) => { results.dnsbl = d; renderDnsbl(d); setStatus('dnsbl', 'done'); })
       .catch((e) => { setStatus('dnsbl', 'error'); $('dnsblBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`; });
 
-    const networkP = runNetworkStability().then((d) => { results.network = d; });
+    const networkP = canClientTest
+      ? runNetworkStability().then((data) => { results.network = data; })
+      : Promise.resolve(renderNetworkUnavailable());
     const jobs = [riskP, dnsblP, agentP, networkP];
     if (useProxy) {
       jobs.push(post('/api/unlock', { proxy })
@@ -696,12 +975,15 @@ async function run(proxy) {
     }
     await Promise.allSettled(jobs);
 
-    const score = computeScore(results.basic, results.risk, results.dnsbl, results.unlock, results.agent);
+    const score = buildScenarioScore(results);
     const grade = renderScore(ip, score);
-    renderVerdict(score.total, grade, results.agent, results);
+    renderScenarioEvidence(score, results);
+    renderVerdict(score, results, reportMode);
+    lastReport = { ip, results, mode: reportMode };
     const loc = results.basic?.sources?.['ip-api.com'];
     saveHistory({
-      time: Date.now(), ip, proxy: useProxy ? proxy : '', total: score.total, grade,
+      time: Date.now(), ip, proxy: useProxy ? proxy : '', total: score.estimate, grade,
+      scenario: score.profile.label, mode: reportMode === 'manual' ? '指定 IP' : reportMode === 'proxy' ? '代理实测' : '当前网络',
       location: loc && !loc.error ? `${loc.country || ''} ${loc.city || ''}`.trim() : '',
     });
   } catch (e) {
@@ -717,6 +999,9 @@ async function run(proxy) {
 
 $('run').addEventListener('click', () => run(''));
 $('rerunNetwork').addEventListener('click', runNetworkStability);
+$('ipInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') run(''); });
+document.querySelectorAll('.scenario-option').forEach((button) => button.addEventListener('click', () => setScenario(button.dataset.scenario)));
+document.querySelectorAll('#modeSwitch button').forEach((button) => button.addEventListener('click', () => setMode(button.dataset.mode)));
 $('runProxy').addEventListener('click', () => run($('proxy').value));
 $('proxy').addEventListener('keydown', (e) => { if (e.key === 'Enter') run($('proxy').value); });
 $('toggleAdv').addEventListener('click', () => {
@@ -726,7 +1011,8 @@ $('toggleAdv').addEventListener('click', () => {
 });
 $('clearHistory').addEventListener('click', () => { localStorage.removeItem(HISTORY_KEY); renderHistory(); });
 
-fetch('/api/config').then((r) => r.json()).then(({ keys, proxyMode }) => {
+fetch('/api/config').then((r) => r.json()).then(({ keys, proxyMode, networkProbes }) => {
+  if (Array.isArray(networkProbes) && networkProbes.length) appState.networkProbes = networkProbes;
   const on = Object.entries(keys).filter(([, v]) => v).map(([k]) => k);
   $('keyStatus').textContent = on.length
     ? `增强数据源已启用: ${on.join(', ')}`
@@ -736,5 +1022,7 @@ fetch('/api/config').then((r) => r.json()).then(({ keys, proxyMode }) => {
     $('toggleAdv').parentElement.classList.add('hidden');
     $('advPanel').classList.add('hidden');
   }
+  renderScenarioOptions();
 }).catch(() => {});
+renderScenarioOptions();
 renderHistory();

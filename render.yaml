@@ -13,6 +13,9 @@ services:
         value: "1"
       - key: NODE_VERSION
         value: "22"
+      # 浏览器会直接访问这些区域探针；某节点休眠/不可达时前端自动降级并标记未测
+      - key: NETWORK_PROBES_JSON
+        value: '[{"id":"us","label":"美国西部","url":"https://pureip-netprobe-us-andrewjx.onrender.com"},{"id":"singapore","label":"新加坡","url":"https://pureip-netprobe-sg-andrewjx.onrender.com"},{"id":"eu","label":"欧洲","url":"https://pureip-netprobe-eu-andrewjx.onrender.com"}]'
       # 以下为可选的风险数据源 key，sync:false 表示不写入仓库、由你在 Render 后台填写
       - key: IPQS_KEY
         sync: false
@@ -27,3 +30,60 @@ services:
       # Spamhaus DQS key：让金标准黑名单真正生效（免费注册 spamhaus.com DQS）
       - key: SPAMHAUS_DQS_KEY
         sync: false
+
+  - type: web
+    name: pureip-netprobe-us-andrewjx
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/network/ping
+    autoDeployTrigger: commit
+    envVars:
+      - key: TRUST_PROXY
+        value: "1"
+      - key: PROBE_ONLY
+        value: "1"
+      - key: PROBE_REGION
+        value: "美国西部"
+      - key: NODE_VERSION
+        value: "22"
+
+  - type: web
+    name: pureip-netprobe-sg-andrewjx
+    runtime: node
+    region: singapore
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/network/ping
+    autoDeployTrigger: commit
+    envVars:
+      - key: TRUST_PROXY
+        value: "1"
+      - key: PROBE_ONLY
+        value: "1"
+      - key: PROBE_REGION
+        value: "新加坡"
+      - key: NODE_VERSION
+        value: "22"
+
+  - type: web
+    name: pureip-netprobe-eu-andrewjx
+    runtime: node
+    region: frankfurt
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/network/ping
+    autoDeployTrigger: commit
+    envVars:
+      - key: TRUST_PROXY
+        value: "1"
+      - key: PROBE_ONLY
+        value: "1"
+      - key: PROBE_REGION
+        value: "欧洲"
+      - key: NODE_VERSION
+        value: "22"
