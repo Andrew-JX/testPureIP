@@ -1,8 +1,11 @@
-# PureIP — IP 纯净度 & AI Agent 可用性检测
+# PureIP — IP 纯净度、场景评估与网络测速
 
 一个可自托管的场景化 IP 与网络检测站。可以检测当前出口，也可以手动输入公网 IPv4 / IPv6，
 然后按 **AI 工具、轻松上网、账号/邮箱、看剧、打游戏** 五种用途重新评估同一份证据。
 结果会明确区分完整实测与 IP 侧预评估，并显示可信度、缺失权重和合理分数区间。
+
+页面另有独立的 **网络测速** 入口：使用 Cloudflare 官方开源测速引擎测量公网下载、上传、空闲/负载延迟，
+再结合 PureIP 的 Oregon、Singapore、Frankfurt 区域探针判断游戏、看剧、AI 工具和视频会议体验。
 
 ## 快速开始
 
@@ -11,7 +14,8 @@ npm install
 npm start                 # 默认 http://0.0.0.0:3210
 ```
 
-打开页面选择用途和「当前网络 / 输入指定 IP」，再开始检测即可。运营者本人还可展开「高级」面板，填入
+打开页面后可在「IP 场景评估 / 网络测速」之间切换。IP 评估页选择用途和「当前网络 / 输入指定 IP」，
+再开始检测即可。运营者本人还可展开「高级」面板，填入
 `socks5://…` 或 `http://…` 代理去检测其他地区节点（新加坡等），高级模式会额外做
 AI / 流媒体解锁实测。
 
@@ -23,7 +27,9 @@ AI / 流媒体解锁实测。
 | 手动 IP | 现有 IP 情报接口 | 支持公网 IPv4 / IPv6；拒绝私网、回环、保留及无效地址；不伪造浏览器和网络实测 |
 | 结论与建议 | 汇总各项 | 按当前用途总结能不能用，优先列出最相关的风险点与操作建议 |
 | AI Agent 可用性 | 客户端指纹 + IP 侧信号 | 时区/IP 一致性、简中语言、中文字体、**WebRTC 泄漏**、`navigator.webdriver` 自动化标志、机房/代理/Tor/滥用标记，综合判断 AI 服务是否会风控 |
+| 公网测速 | `@cloudflare/speedtest` | 快速/完整两档；下载、上传、空闲延迟、抖动、下载/上传负载延迟、Bufferbloat 评分与实时采样图 |
 | 网络稳定性 | 浏览器到 PureIP/区域探针 | 空闲与负载双阶段采样、P95、抖动、HTTP 请求失败率、3 路并发下载，并显示美国/新加坡/欧洲等可配置区域节点 |
+| 测速场景建议 | 公网测速 + 区域探针 | 分别判断 AI 工具、4K 看剧、在线游戏、视频会议体验；最近 10 次结果仅保存在浏览器本地 |
 | IP 详情 | ipapi.is + 客户端 | IP 属性(住宅/机房/移动)、AS 域名、IP 网段、路由前缀、带国旗位置、滥用评分、**浏览器指纹**、WebRTC 泄漏 |
 | 多源地理核对 | ip-api / ipwho.is / ipapi.is / **ipinfo Lite** | 5 源交叉验证位置、ASN、ISP、rDNS、机房/住宅/移动标记 |
 | 风险评分 | ProxyCheck.io / AbuseIPDB / ipapi.is 滥用 / Shodan 暴露面 | 0-100 欺诈/信誉分聚合；Shodan 查暴露的代理端口 |
@@ -36,7 +42,18 @@ AI / 流媒体解锁实测。
 > 不等于权威认证。免费档**无法识别伪装成住宅的超售代理（“万人骑”）**——那需要付费行为数据；
 > 公开自测模式的「AI Agent」分是基于 IP 与浏览器环境的**推断**，非真去访问 Claude 实测。
 > 网络检测反映的是浏览器到当前 PureIP 部署节点的网页体验；HTTP 请求失败率不等同于 ICMP 丢包，
-> 结果还会受节点距离和服务端瞬时负载影响。
+> 结果还会受节点距离和服务端瞬时负载影响。公网下载/上传测速反映的是浏览器到 Cloudflare 边缘节点的
+> 应用层吞吐，不等同于运营商实验室或 ICMP 测试，也不能替手动输入的远程 IP 测速。
+
+## 网络测速说明
+
+- **快速模式**：约 10–15 秒，按网络状况自适应停止，预计消耗 20–40 MB。
+- **完整模式**：约 20–30 秒，使用更大的渐进样本，预计消耗 80–180 MB。
+- 测速不会自动开始；检测到浏览器流量节省或较慢移动网络时默认使用快速模式。
+- Cloudflare SDK 的 `logAimApiUrl` 已显式关闭，PureIP 不提交最终 AIM 报告；测速 HTTP 流量仍会直达
+  Cloudflare 边缘节点。结果和最近历史只写入当前浏览器 `localStorage`。
+- UDP 丢包没有伪装成 HTTP 指标：在部署自有 TURN 服务前，页面只报告 HTTP 请求失败率。
+- 最近一次 30 分钟内的完整测速可参与看剧、浏览、AI 和云游戏场景的网络权重计算。
 
 ## API key（全部可选，注册后维度更全）
 
@@ -108,3 +125,5 @@ docker run -d -p 3210:3210 -e TRUST_PROXY=1 -e IPQS_KEY=xxx --name pureip pureip
 
 - [xykt/IPQuality](https://github.com/xykt/IPQuality) — bash 版 IP 质量检测脚本
 - [jason5ng32/MyIP](https://github.com/jason5ng32/myip) — ipcheck.ing 开源版
+- [cloudflare/speedtest](https://github.com/cloudflare/speedtest) — MIT 开源公网测速引擎
+- [librespeed/speedtest](https://github.com/librespeed/speedtest) — 多节点与稳定性测试设计参考

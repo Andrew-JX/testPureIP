@@ -184,6 +184,12 @@ if (PROBE_ONLY) {
     return res.status(404).json({ error: 'probe-only service' });
   });
 } else {
+  // 只暴露测速 SDK 的已构建浏览器文件，避免开放整个 node_modules 目录。
+  app.get('/vendor/cloudflare-speedtest.js', (_req, res) => {
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.sendFile(path.join(__dirname, 'node_modules', '@cloudflare', 'speedtest', 'dist', 'speedtest.js'));
+  });
+  app.get('/favicon.ico', (_req, res) => res.status(204).end());
   app.use(express.static(path.join(__dirname, 'public')));
 }
 

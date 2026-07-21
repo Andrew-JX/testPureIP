@@ -8,6 +8,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@cloudflare/speedtest": "^1.11.0",
     "express": "^4.21.0",
     "fetch-socks": "^1.2.0",
     "undici": "^6.21.0"

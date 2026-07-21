@@ -1,3 +1,5 @@
+import { getLatestSpeedResult, initSpeedTest, setSpeedProbes } from './speedtest.js';
+
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -651,23 +653,31 @@ function targetRegionScore(basic, network) {
 
 function selectedNetworkScore(network) {
   if (!network) return null;
+  const publicSpeed = getLatestSpeedResult();
   if (appState.scenario === 'stream') {
     const required = { '720p': 3, '1080p': 5, '4k': 15 }[appState.streamQuality];
-    const throughput = network.downloadMbps == null ? null : Math.min(100, network.downloadMbps / required * 100);
+    const measuredDownload = publicSpeed?.downloadMbps ?? network.downloadMbps;
+    const throughput = measuredDownload == null ? null : Math.min(100, measuredDownload / required * 100);
     return throughput == null ? network.score : Math.round(network.score * 0.7 + throughput * 0.3);
   }
-  if (appState.scenario !== 'game') return network.score;
+  if (appState.scenario !== 'game') {
+    if (!publicSpeed?.score) return network.score;
+    const speedWeight = appState.scenario === 'browse' ? 0.35 : 0.18;
+    return Math.round(network.score * (1 - speedWeight) + publicSpeed.score * speedWeight);
+  }
   const region = network.regions?.find((item) => item.id === appState.gameRegion);
   if (!region?.available) return network.score;
   if (appState.gameStyle === 'competitive') {
     const latencyPenalty = Math.max(0, region.avg - 35) * 0.65;
     const jitterPenalty = Math.max(0, region.jitter - 8) * 1.8;
-    return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - region.loss * 8));
+    const loadPenalty = publicSpeed ? Math.max(0, publicSpeed.bufferbloat - 30) * 0.12 : 0;
+    return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - loadPenalty - region.loss * 8));
   }
   if (appState.gameStyle === 'cloud') {
     const latencyPenalty = Math.max(0, region.avg - 45) * 0.7;
     const loadedPenalty = Math.max(0, network.loadedAvg - 80) * 0.25;
-    const bandwidthPenalty = network.downloadMbps == null ? 15 : Math.max(0, 25 - network.downloadMbps) * 1.2;
+    const measuredDownload = publicSpeed?.downloadMbps ?? network.downloadMbps;
+    const bandwidthPenalty = measuredDownload == null ? 15 : Math.max(0, 25 - measuredDownload) * 1.2;
     return Math.max(0, Math.round(100 - latencyPenalty - loadedPenalty - bandwidthPenalty - region.loss * 6));
   }
   const latencyPenalty = Math.max(0, region.avg - 90) * 0.35;
@@ -757,9 +767,10 @@ function renderVerdict(score, results, reportMode = appState.mode) {
   if (region?.available && region.score < 55) issues.push({ level: 'bad', label: '出口与目标地区不匹配', advice: '请选择与目标服务或区服更接近的出口节点。' });
   if (score.missingWeight > 0) issues.push({ level: 'warn', label: `仍有 ${score.missingWeight}% 权重未实测`, advice: `当前可信度为${score.confidence === 'high' ? '高' : score.confidence === 'medium' ? '中' : '低'}；未测项不会按满分处理。` });
 
-  if (appState.scenario === 'stream' && results.network?.downloadMbps != null) {
+  const measuredDownload = getLatestSpeedResult()?.downloadMbps ?? results.network?.downloadMbps;
+  if (appState.scenario === 'stream' && measuredDownload != null) {
     const required = { '720p': 3, '1080p': 5, '4k': 15 }[appState.streamQuality];
-    if (results.network.downloadMbps < required) issues.unshift({ level: 'bad', label: `带宽不足以稳定播放 ${appState.streamQuality.toUpperCase()}`, advice: `当前约 ${results.network.downloadMbps.toFixed(1)} Mbps，目标建议至少 ${required} Mbps。` });
+    if (measuredDownload < required) issues.unshift({ level: 'bad', label: `带宽不足以稳定播放 ${appState.streamQuality.toUpperCase()}`, advice: `当前约 ${measuredDownload.toFixed(1)} Mbps，目标建议至少 ${required} Mbps。` });
   }
 
   const unique = issues.filter((item, index, list) => list.findIndex((other) => other.label === item.label) === index).slice(0, 6);
@@ -997,11 +1008,26 @@ async function run(proxy) {
   }
 }
 
+function setProductView(view) {
+  const speed = view === 'speed';
+  $('assessmentView').classList.toggle('hidden', speed);
+  $('speedView').classList.toggle('hidden', !speed);
+  document.querySelectorAll('.product-switch button').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
+  document.querySelector('header .badge').textContent = speed ? '公网速度与区域链路' : '场景化网络体检';
+  $('headerSub').innerHTML = speed
+    ? '测下载、上传、负载延迟与区域链路，看看网络<strong>适合拿来做什么</strong>'
+    : '不只判断 IP 干不干净，更告诉你它<strong>适合拿来做什么</strong>';
+  document.title = speed ? 'PureIP · 网络测速' : 'PureIP · 你的 IP 适合做什么？';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
 $('run').addEventListener('click', () => run(''));
 $('rerunNetwork').addEventListener('click', runNetworkStability);
+$('openSpeedTest').addEventListener('click', () => setProductView('speed'));
 $('ipInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') run(''); });
 document.querySelectorAll('.scenario-option').forEach((button) => button.addEventListener('click', () => setScenario(button.dataset.scenario)));
 document.querySelectorAll('#modeSwitch button').forEach((button) => button.addEventListener('click', () => setMode(button.dataset.mode)));
+document.querySelectorAll('.product-switch button').forEach((button) => button.addEventListener('click', () => setProductView(button.dataset.view)));
 $('runProxy').addEventListener('click', () => run($('proxy').value));
 $('proxy').addEventListener('keydown', (e) => { if (e.key === 'Enter') run($('proxy').value); });
 $('toggleAdv').addEventListener('click', () => {
@@ -1012,7 +1038,10 @@ $('toggleAdv').addEventListener('click', () => {
 $('clearHistory').addEventListener('click', () => { localStorage.removeItem(HISTORY_KEY); renderHistory(); });
 
 fetch('/api/config').then((r) => r.json()).then(({ keys, proxyMode, networkProbes }) => {
-  if (Array.isArray(networkProbes) && networkProbes.length) appState.networkProbes = networkProbes;
+  if (Array.isArray(networkProbes) && networkProbes.length) {
+    appState.networkProbes = networkProbes;
+    setSpeedProbes(networkProbes);
+  }
   const on = Object.entries(keys).filter(([, v]) => v).map(([k]) => k);
   $('keyStatus').textContent = on.length
     ? `增强数据源已启用: ${on.join(', ')}`
@@ -1024,5 +1053,7 @@ fetch('/api/config').then((r) => r.json()).then(({ keys, proxyMode, networkProbe
   }
   renderScenarioOptions();
 }).catch(() => {});
+document.addEventListener('pureip:speed-result', () => rerenderLastReport());
+initSpeedTest();
 renderScenarioOptions();
 renderHistory();

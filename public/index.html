@@ -10,9 +10,14 @@
 <body>
   <header>
     <h1>PureIP <span class="badge">场景化网络体检</span></h1>
-    <div class="sub">不只判断 IP 干不干净，更告诉你它<strong>适合拿来做什么</strong></div>
+    <div class="sub" id="headerSub">不只判断 IP 干不干净，更告诉你它<strong>适合拿来做什么</strong></div>
+    <nav class="product-switch" aria-label="功能切换">
+      <button class="active" data-view="assessment">IP 场景评估</button>
+      <button data-view="speed">网络测速 <span>NEW</span></button>
+    </nav>
   </header>
 
+  <div id="assessmentView">
   <section class="control card control-card">
     <div class="control-step"><span>1</span>选择使用场景</div>
     <div class="scenario-picker" id="scenarioPicker">
@@ -73,7 +78,7 @@
     </section>
 
     <section class="card" id="card-network">
-      <h2>网络稳定性 <span class="status" data-for="network"></span> <button id="rerunNetwork" class="link-btn">单独重测</button></h2>
+      <h2>网络稳定性 <span class="status" data-for="network"></span> <button id="rerunNetwork" class="link-btn">单独重测</button> <button id="openSpeedTest" class="link-btn">完整测速</button></h2>
       <p class="card-desc">连续测量当前浏览器到 PureIP 节点的 HTTP 往返延迟、抖动和请求失败率，并提供参考下载速度；不计入 IP 纯净度总分。</p>
       <div class="body" id="networkBody"><span class="dim">等待检测</span></div>
     </section>
@@ -118,11 +123,75 @@
     <h2>历史记录 <button id="clearHistory" class="link-btn">清空</button></h2>
     <div class="body" id="historyBody"><span class="dim">暂无记录</span></div>
   </section>
+  </div>
+
+  <div id="speedView" class="hidden">
+    <section class="card speed-hero">
+      <div class="speed-intro">
+        <span class="speed-kicker">CURRENT CONNECTION</span>
+        <h2>测测这条网络，到底跑得怎么样</h2>
+        <p>公网带宽由 Cloudflare 边缘节点测量；PureIP 再补充美国、新加坡、欧洲链路延迟，并给出看剧、游戏与 AI 使用建议。</p>
+      </div>
+      <div class="speed-controls">
+        <div class="speed-mode" id="speedMode" aria-label="测速模式">
+          <button class="active" data-speed-mode="quick">快速 <small>约 10–15 秒</small></button>
+          <button data-speed-mode="full">完整 <small>约 20–30 秒</small></button>
+        </div>
+        <button id="startSpeedTest" class="speed-start">开始测速</button>
+        <button id="cancelSpeedTest" class="speed-cancel hidden">停止</button>
+      </div>
+      <div class="speed-privacy" id="speedPrivacy">快速模式预计消耗 20–40 MB。测速不会自动开始，结果仅保存在当前浏览器。</div>
+    </section>
+
+    <main class="speed-dashboard" id="speedDashboard">
+      <section class="card speed-stage-card">
+        <div class="speed-dial" id="speedDial" style="--progress: 0deg">
+          <div class="speed-dial-inner">
+            <span id="speedPhase">准备就绪</span>
+            <strong id="speedLiveValue">0.0</strong>
+            <small id="speedLiveUnit">Mbps</small>
+          </div>
+        </div>
+        <div class="speed-stage-copy">
+          <div class="speed-status-row"><b id="speedStatus">等待开始</b><span id="speedProgressText">0%</span></div>
+          <div class="speed-progress"><i id="speedProgressBar"></i></div>
+          <div class="speed-live-chart" id="speedLiveChart" aria-label="实时速度变化"><span>开始后显示实时采样</span></div>
+          <p id="speedStageHint">测速期间请保持当前页面在前台，并暂停大型下载或上传。</p>
+        </div>
+      </section>
+
+      <section class="speed-metric-grid" aria-label="测速结果">
+        <article class="card speed-metric primary-metric"><span>DOWNLOAD</span><strong id="speedDownload">—</strong><small>Mbps 下载</small></article>
+        <article class="card speed-metric primary-metric"><span>UPLOAD</span><strong id="speedUpload">—</strong><small>Mbps 上传</small></article>
+        <article class="card speed-metric"><span>LATENCY</span><strong id="speedLatency">—</strong><small>ms 空闲延迟</small></article>
+        <article class="card speed-metric"><span>JITTER</span><strong id="speedJitter">—</strong><small>ms 抖动</small></article>
+        <article class="card speed-metric"><span>DOWNLOAD LOAD</span><strong id="speedDownLoadLatency">—</strong><small>ms 下载负载延迟</small></article>
+        <article class="card speed-metric"><span>UPLOAD LOAD</span><strong id="speedUpLoadLatency">—</strong><small>ms 上传负载延迟</small></article>
+      </section>
+
+      <section class="card hidden" id="speedVerdictCard">
+        <div class="speed-section-title"><div><span class="speed-kicker">PUREIP VERDICT</span><h2>网络体验结论</h2></div><span class="speed-grade" id="speedGrade">—</span></div>
+        <div class="speed-verdict" id="speedVerdict"></div>
+        <div class="speed-readiness" id="speedReadiness"></div>
+      </section>
+
+      <section class="card">
+        <div class="speed-section-title"><div><span class="speed-kicker">REGIONAL ROUTES</span><h2>区域链路</h2></div><span class="dim">小流量 HTTP 往返采样</span></div>
+        <div class="region-probes speed-region-probes" id="speedRegions"><span class="dim">完成公网测速后自动检测</span></div>
+        <p class="network-note dim">区域结果反映当前浏览器到 PureIP 探针的链路；免费节点休眠或繁忙时会标记为不可用，不会当成你的网络故障。</p>
+      </section>
+
+      <section class="card">
+        <div class="speed-section-title"><div><span class="speed-kicker">LOCAL HISTORY</span><h2>最近测速</h2></div><button id="clearSpeedHistory" class="link-btn">清空</button></div>
+        <div id="speedHistory"><span class="dim">暂无测速记录</span></div>
+      </section>
+    </main>
+  </div>
 
   <footer>
     <span class="dim">本地运算 · 不存储你的检测数据。IP 库来自 ip-api / ipapi.is / ipwho.is / ProxyCheck / Shodan 等公开数据源。</span>
   </footer>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
