@@ -3,7 +3,7 @@ services:
     name: pureip
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: node server.js
     healthCheckPath: /
     autoDeploy: true
@@ -36,7 +36,7 @@ services:
     runtime: node
     region: oregon
     plan: free
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: node server.js
     healthCheckPath: /api/network/ping
     autoDeployTrigger: commit
@@ -55,7 +55,7 @@ services:
     runtime: node
     region: singapore
     plan: free
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: node server.js
     healthCheckPath: /api/network/ping
     autoDeployTrigger: commit
@@ -74,7 +74,7 @@ services:
     runtime: node
     region: frankfurt
     plan: free
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: node server.js
     healthCheckPath: /api/network/ping
     autoDeployTrigger: commit

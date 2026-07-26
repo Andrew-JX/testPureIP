@@ -10,8 +10,9 @@
 ## 快速开始
 
 ```bash
-npm install
+npm ci
 npm start                 # 默认 http://0.0.0.0:3210
+npm run check             # 全量语法检查 + 自动化测试
 ```
 
 打开页面后可在「IP 场景评估 / 网络测速」之间切换。IP 评估页选择用途和「当前网络 / 输入指定 IP」，
@@ -31,7 +32,7 @@ AI / 流媒体解锁实测。
 | 网络稳定性 | 浏览器到 PureIP/区域探针 | 空闲与负载双阶段采样、P95、抖动、HTTP 请求失败率、3 路并发下载，并显示美国/新加坡/欧洲等可配置区域节点 |
 | 测速场景建议 | 公网测速 + 区域探针 | 分别判断 AI 工具、4K 看剧、在线游戏、视频会议体验；最近 10 次结果仅保存在浏览器本地 |
 | IP 详情 | ipapi.is + 客户端 | IP 属性(住宅/机房/移动)、AS 域名、IP 网段、路由前缀、带国旗位置、滥用评分、**浏览器指纹**、WebRTC 泄漏 |
-| 多源地理核对 | ip-api / ipwho.is / ipapi.is / **ipinfo Lite** | 5 源交叉验证位置、ASN、ISP、rDNS、机房/住宅/移动标记 |
+| 多源地理核对 | ip-api / ipwho.is / ipapi.is / **ipinfo Lite** | 4 源交叉验证位置、ASN、ISP、rDNS、机房/住宅/移动标记 |
 | 风险评分 | ProxyCheck.io / AbuseIPDB / ipapi.is 滥用 / Shodan 暴露面 | 0-100 欺诈/信誉分聚合；Shodan 查暴露的代理端口 |
 | DNS 黑名单 | **Spamhaus ZEN(DQS)** / SpamCop / DroneBL / PSBL / s5h 等 | 走 DoH 查询规避云端拒查；显示有效覆盖度，避免假阴性 |
 | 解锁实测（仅高级） | 走代理直连目标 | Claude、ChatGPT、Gemini、Netflix、YouTube Premium、Disney+、TikTok，识别地区码 |
@@ -44,6 +45,15 @@ AI / 流媒体解锁实测。
 > 网络检测反映的是浏览器到当前 PureIP 部署节点的网页体验；HTTP 请求失败率不等同于 ICMP 丢包，
 > 结果还会受节点距离和服务端瞬时负载影响。公网下载/上传测速反映的是浏览器到 Cloudflare 边缘节点的
 > 应用层吞吐，不等同于运营商实验室或 ICMP 测试，也不能替手动输入的远程 IP 测速。
+
+## 数据与隐私
+
+- 检测「当前网络」时，服务端会把当前公网 IP 查询发送给 ip-api、ipwho.is、ipapi.is、IPinfo、
+  AbuseIPDB、ProxyCheck、Shodan，以及 DNSBL/DoH 服务；这些第三方会看到被查询的公网 IP。
+- 检测「输入指定 IP」时，只会查询用户输入的地址，不会把浏览器环境或当前网络测速结果伪装成该地址的数据。
+- 公网测速由浏览器直接连接 Cloudflare 边缘节点。快速模式预计传输 20–40 MB，完整模式预计传输
+  80–180 MB；测速不会自动开始。
+- PureIP 服务端不保存检测结果。场景评估历史和最近测速结果只保存在当前浏览器 `localStorage`，可随时清空。
 
 ## 网络测速说明
 
@@ -109,6 +119,9 @@ AI / 流媒体解锁实测。
 仓库的 `render.yaml` 已包含 Oregon、Singapore、Frankfurt 三个免费区域探针。Render 免费服务闲置后会休眠，
 因此区域节点的第一次采样可能包含冷启动时间；前端会将不可达节点标记为未测，不会静默按满分计算。
 
+仓库同时包含 GitHub Actions 校验流程。推送前应确保 `npm run check` 与 `npm audit --omit=dev` 通过；
+推送 `main` 后，Render Blueprint 中启用 `autoDeploy` 的服务会自动使用 `npm ci` 进行可复现构建。
+
 ### 其他部署方式
 
 Docker（Railway / Fly.io / 自建 VPS 通用）：
@@ -120,6 +133,22 @@ docker run -d -p 3210:3210 -e TRUST_PROXY=1 -e IPQS_KEY=xxx --name pureip pureip
 
 安全与性能：代理/解锁端点在公开部署默认禁用（防 SSRF）；IP 输入校验；每 IP 每分钟 40 次
 + 全局每分钟上限双层限流；查询结果按 IP 缓存 10 分钟。检测数据不落库，历史记录仅存访客浏览器本地。
+
+前后端共用同一套公网 IPv4 / IPv6 校验，拒绝私网、CGNAT、链路本地、组播、文档和其他保留地址。
+风险评分只使用服务端查询或缓存的证据，不接受客户端回传的信誉标记；同一 IP 的并发查询会合并，避免击穿
+第三方 API 配额。服务端还会限制 JSON 请求体大小，并返回基础安全响应头。
+
+## 开发验证
+
+```bash
+npm ci
+npm run check
+npm audit --omit=dev
+```
+
+自动化测试覆盖公网 IP 边界、风险证据信任边界、场景权重与缺失区间、代理 dispatcher、静态资源、
+安全响应头和本地服务冒烟流程。涉及真实第三方 API、平台解锁和大流量公网测速的测试仍应按需手动执行，
+以免无意消耗配额或流量。
 
 ## 参考
 

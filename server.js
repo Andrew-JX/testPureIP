@@ -1,10 +1,11 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isIP } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { Agent } from 'undici';
 import { buildDispatcher } from './src/proxy.js';
+import { isPublicIp } from './public/ip-validation.js';
+import { createRiskHandler } from './src/routes/risk.js';
 import { detectExitIp, basicInfo } from './src/checks/basic.js';
 import { riskScores } from './src/checks/risk.js';
 import { dnsblCheck } from './src/checks/dnsbl.js';
@@ -22,11 +23,6 @@ const TRUST_PROXY = /^(1|true)$/i.test(process.env.TRUST_PROXY || '');
 const ENABLE_PROXY_MODE = process.env.ENABLE_PROXY_MODE
   ? /^(1|true)$/i.test(process.env.ENABLE_PROXY_MODE)
   : !TRUST_PROXY;
-
-// 校验是否为合法 IP（IPv4 / IPv6），防止把任意字符串拼进第三方查询 URL
-function isValidIp(ip) {
-  return typeof ip === 'string' && ip.length >= 2 && ip.length <= 45 && isIP(ip) > 0;
-}
 
 // key 来源：环境变量优先（托管平台用），其次本地 config.json
 function loadKeys() {
@@ -68,15 +64,6 @@ function loadNetworkProbes() {
   } catch {
     return fallback;
   }
-}
-
-function isPrivate(ip) {
-  if (!ip) return true;
-  if (ip === '::1' || ip === 'localhost' || ip.startsWith('127.')) return true;
-  if (/^10\./.test(ip) || /^192\.168\./.test(ip)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
-  if (/^169\.254\./.test(ip) || /^f[cd]/i.test(ip)) return true;
-  return false;
 }
 
 // 只有 TRUST_PROXY 开启时才信任转发头（反代环境）；否则用 socket 地址防伪造
@@ -144,6 +131,7 @@ function downloadLimit(req, res, next) {
 const CACHE_TTL = 10 * 60_000;
 const CACHE_MAX = 5000; // 上限，防攻击者用海量不同 IP 撑爆内存
 const cache = new Map();
+const inflight = new Map();
 function cacheGet(key) {
   const rec = cache.get(key);
   if (rec && Date.now() - rec.at < CACHE_TTL) return rec.data;
@@ -161,9 +149,16 @@ function cacheSet(key, data) {
 async function cached(key, compute) {
   const hit = cacheGet(key);
   if (hit) return hit;
-  const data = await compute();
-  cacheSet(key, data);
-  return data;
+  if (inflight.has(key)) return inflight.get(key);
+  const pending = Promise.resolve()
+    .then(compute)
+    .then((data) => {
+      cacheSet(key, data);
+      return data;
+    })
+    .finally(() => inflight.delete(key));
+  inflight.set(key, pending);
+  return pending;
 }
 
 setInterval(() => {
@@ -175,8 +170,22 @@ setInterval(() => {
 
 const app = express();
 if (TRUST_PROXY) app.set('trust proxy', true);
-app.use(express.json());
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  });
+  next();
+});
+app.use(express.json({ limit: '32kb' }));
 app.use('/api', globalLimit, rateLimit);
+
+const asyncRoute = (handler) => (req, res, next) => {
+  Promise.resolve(handler(req, res, next)).catch(next);
+};
 if (PROBE_ONLY) {
   app.get('/', (req, res) => res.json({ service: 'PureIP network probe', region: PROBE_REGION }));
   app.use((req, res, next) => {
@@ -237,9 +246,9 @@ app.get('/api/network/download', downloadLimit, (req, res) => {
 });
 
 // 访客自己的真实出口 IP（公开站默认流程）。本地开发时退回服务器出口 IP。
-app.post('/api/self', async (req, res) => {
+app.post('/api/self', asyncRoute(async (req, res) => {
   let ip = clientIp(req);
-  if (isPrivate(ip)) {
+  if (!isPublicIp(ip)) {
     try {
       ip = await detectExitIp(new Agent({ connectTimeout: 8000 }));
     } catch {
@@ -247,7 +256,7 @@ app.post('/api/self', async (req, res) => {
     }
   }
   res.json({ ip });
-});
+}));
 
 // 代理模式端点的统一守卫：公开部署默认关闭，防 SSRF / 被当开放代理滥用
 function requireProxyMode(req, res, next) {
@@ -270,24 +279,22 @@ app.post('/api/exit-ip', requireProxyMode, async (req, res) => {
   }
 });
 
-app.post('/api/basic', async (req, res) => {
+app.post('/api/basic', asyncRoute(async (req, res) => {
   const { ip } = req.body || {};
-  if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
+  if (!isPublicIp(ip)) return res.status(400).json({ error: '请输入有效的公网 IP 地址' });
   res.json(await cached(`basic:${ip}`, () => basicInfo(ip, loadKeys())));
-});
+}));
 
-app.post('/api/risk', async (req, res) => {
-  const { ip, ipapiis } = req.body || {};
-  if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
-  const basicResult = ipapiis ? { sources: { 'ipapi.is': ipapiis } } : null;
-  res.json(await cached(`risk:${ip}`, () => riskScores(ip, loadKeys(), basicResult)));
-});
+app.post('/api/risk', asyncRoute(createRiskHandler({
+  loadBasic: (ip) => cached(`basic:${ip}`, () => basicInfo(ip, loadKeys())),
+  scoreRisk: (ip, basicResult) => cached(`risk:${ip}`, () => riskScores(ip, loadKeys(), basicResult)),
+})));
 
-app.post('/api/dnsbl', async (req, res) => {
+app.post('/api/dnsbl', asyncRoute(async (req, res) => {
   const { ip } = req.body || {};
-  if (!isValidIp(ip)) return res.status(400).json({ error: '无效的 IP 地址' });
+  if (!isPublicIp(ip)) return res.status(400).json({ error: '请输入有效的公网 IP 地址' });
   res.json(await cached(`dnsbl:${ip}`, () => dnsblCheck(ip, loadKeys().spamhausDqs)));
-});
+}));
 
 // AI/流媒体解锁实测（走指定代理；不填代理则测服务器出口，仅在高级模式使用）
 app.post('/api/unlock', requireProxyMode, async (req, res) => {
@@ -300,6 +307,17 @@ app.post('/api/unlock', requireProxyMode, async (req, res) => {
   } finally {
     dispatcher?.close?.();
   }
+});
+
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  const clientError = Number.isInteger(error?.status) && error.status >= 400 && error.status < 500;
+  const status = clientError ? error.status : 502;
+  const detail = error?.cause?.code || error?.code || error?.name || 'Error';
+  console.error(`请求处理失败 ${req.method} ${req.path}: ${detail}`);
+  return res.status(status).json({
+    error: clientError ? '请求格式无效' : '上游服务暂时不可用，请稍后重试',
+  });
 });
 
 app.listen(PORT, HOST, () => {

@@ -1,40 +1,9 @@
 import { getLatestSpeedResult, initSpeedTest, setSpeedProbes } from './speedtest.js';
+import { isPublicIp } from './ip-validation.js';
+import { SCENARIOS, calculateScenarioScore } from './scenarios.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-
-const SCENARIOS = {
-  ai: {
-    label: 'AI 工具', noun: 'AI 工具', icon: 'AI',
-    desc: '重点检查 IP 信誉、住宅属性、浏览器一致性和自动化特征。',
-    weights: { reputation: 30, identity: 25, environment: 30, region: 5, network: 5, service: 5 },
-  },
-  browse: {
-    label: '轻松上网', noun: '日常跨境浏览', icon: 'WEB',
-    desc: '重点检查网页响应、抖动、失败率、带宽和线路可达性。',
-    weights: { reputation: 15, identity: 10, environment: 10, region: 20, network: 40, service: 5 },
-  },
-  account: {
-    label: '账号 / 邮箱', noun: '账号与邮箱登录', icon: 'ID',
-    desc: '重点检查 IP 信誉、位置与浏览器环境是否像一个稳定的真实用户。',
-    weights: { reputation: 25, identity: 20, environment: 30, region: 15, network: 10, service: 0 },
-  },
-  stream: {
-    label: '看剧', noun: '流媒体观看', icon: '4K',
-    desc: '重点检查目标地区、代理识别、解锁结果、稳定带宽和缓冲风险。',
-    weights: { reputation: 10, identity: 10, environment: 5, region: 25, network: 30, service: 20 },
-  },
-  game: {
-    label: '打游戏', noun: '游戏连接', icon: 'PING',
-    desc: '重点检查目标区服延迟、负载延迟、抖动和请求失败率。',
-    weights: { reputation: 5, identity: 5, environment: 0, region: 15, network: 70, service: 5 },
-  },
-};
-
-const DIMENSION_LABELS = {
-  reputation: '信誉与滥用', identity: '网络身份', environment: '环境一致性',
-  region: '地区与可达性', network: '网络质量', service: '服务实测',
-};
 
 const appState = {
   scenario: 'ai', mode: 'self',
@@ -469,14 +438,6 @@ function webrtcProbe(timeout = 3500) {
   });
 }
 
-// 只对 IPv4 判断是否公网；IPv6 / mDNS(.local) 候选忽略
-function isPublicIp(ip) {
-  if (!ip || ip.split('.').length !== 4) return false;
-  if (/^10\./.test(ip) || /^192\.168\./.test(ip) || /^127\./.test(ip)) return false;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip) || /^169\.254\./.test(ip)) return false;
-  return true;
-}
-
 async function analyzeAgent(exitIp, basic) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const offset = -new Date().getTimezoneOffset() / 60;
@@ -712,20 +673,7 @@ function buildScenarioScore(results) {
     network: selectedNetworkScore(results.network),
     service: serviceScore(results.unlock, results.network),
   };
-  const dimensions = Object.entries(profile.weights).map(([key, weight]) => ({
-    key, label: DIMENSION_LABELS[key], weight, score: values[key], available: values[key] != null || weight === 0,
-  }));
-  const relevant = dimensions.filter((item) => item.weight > 0);
-  const known = relevant.filter((item) => item.available);
-  const knownWeight = known.reduce((sum, item) => sum + item.weight, 0);
-  const weightedKnown = known.reduce((sum, item) => sum + item.score * item.weight / 100, 0);
-  const estimate = knownWeight ? Math.round(weightedKnown * 100 / knownWeight) : 0;
-  const missingWeight = 100 - knownWeight;
-  const range = [Math.round(weightedKnown), Math.round(Math.min(100, weightedKnown + missingWeight))];
-  const confidence = knownWeight >= 90 ? 'high' : knownWeight >= 60 ? 'medium' : 'low';
-  const grade = estimate >= 85 ? '非常适合' : estimate >= 70 ? '适合' : estimate >= 55 ? '勉强可用' : '不推荐';
-  const cls = estimate >= 75 ? 'good' : estimate >= 55 ? 'warn' : 'bad';
-  return { profile, dimensions, estimate, knownWeight, missingWeight, range, confidence, grade, cls };
+  return calculateScenarioScore(profile, values);
 }
 
 function renderScenarioEvidence(score, results) {
@@ -832,23 +780,7 @@ let running = false;
 let lastReport = null;
 
 function validManualIp(value) {
-  const ip = value.trim();
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
-    const octets = ip.split('.').map(Number);
-    if (!octets.every((value) => value >= 0 && value <= 255)) return false;
-    if (octets[0] === 0 || octets[0] === 10 || octets[0] === 127 || octets[0] >= 224) return false;
-    if (octets[0] === 192 && octets[1] === 168) return false;
-    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return false;
-    if (octets[0] === 169 && octets[1] === 254) return false;
-    return true;
-  }
-  if (!ip.includes(':') || !/^[0-9a-f:]+$/i.test(ip)) return false;
-  if (ip.split('::').length > 2) return false;
-  const groups = ip.split(':').filter(Boolean);
-  const compressed = ip.includes('::');
-  if ((!compressed && groups.length !== 8) || (compressed && groups.length >= 8)) return false;
-  if (!groups.every((group) => group.length <= 4)) return false;
-  return !/^::$|^::1$|^f[cd]|^fe[89ab]/i.test(ip);
+  return isPublicIp(value);
 }
 
 function showInputError(message = '') {
@@ -952,17 +884,25 @@ async function run(proxy) {
 
     const results = {};
     const canClientTest = reportMode === 'self';
+    let basicError = null;
     const basicP = post('/api/basic', { ip })
       .then((d) => { results.basic = d; renderBasic(d); setStatus('basic', 'done'); return d; })
-      .catch((e) => { setStatus('basic', 'error'); $('basicBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`; return null; });
+      .catch((e) => {
+        basicError = e;
+        setStatus('basic', 'error');
+        $('basicBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`;
+        return null;
+      });
 
-    const riskP = basicP.then((b) =>
-      post('/api/risk', { ip, ipapiis: b?.sources?.['ipapi.is'] })
+    const riskP = basicP.then((basic) => basic
+      ? post('/api/risk', { ip })
         .then((d) => { results.risk = d; renderRisk(d); setStatus('risk', 'done'); })
         .catch((e) => { setStatus('risk', 'error'); $('riskBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`; })
+      : undefined
     );
 
     const agentP = basicP.then(async (basic) => {
+      if (!basic) return;
       if (canClientTest) results.agent = await analyzeAgent(ip, basic);
       renderDetail(ip, basic, results.agent);
       setStatus('detail', 'done');
@@ -985,6 +925,7 @@ async function run(proxy) {
         .catch((e) => { setStatus('unlock', 'error'); $('unlockBody').innerHTML = `<span class="dim">${esc(e.message)}</span>`; }));
     }
     await Promise.allSettled(jobs);
+    if (!results.basic) throw basicError || new Error('无法获取该 IP 的基础信息');
 
     const score = buildScenarioScore(results);
     const grade = renderScore(ip, score);
@@ -998,6 +939,9 @@ async function run(proxy) {
       location: loc && !loc.error ? `${loc.country || ''} ${loc.city || ''}`.trim() : '',
     });
   } catch (e) {
+    lastReport = null;
+    $('card-verdict').classList.add('hidden');
+    $('scoreNum').textContent = '--';
     $('scoreGrade').textContent = '检测失败';
     $('scoreIp').textContent = e.message;
     stages.forEach((n) => setStatus(n, 'error'));

@@ -5,12 +5,21 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test",
+    "check:syntax": "node --check server.js && node --check src/http.js && node --check src/proxy.js && node --check src/routes/risk.js && node --check src/checks/basic.js && node --check src/checks/risk.js && node --check src/checks/dnsbl.js && node --check src/checks/unlock.js && node --check public/app.js && node --check public/ip-validation.js && node --check public/scenarios.js && node --check public/speedtest.js",
+    "check": "npm run check:syntax && npm test"
   },
   "dependencies": {
     "@cloudflare/speedtest": "^1.11.0",
     "express": "^4.21.0",
-    "fetch-socks": "^1.2.0",
+    "fetch-socks": "^1.3.3",
     "undici": "^6.21.0"
+  },
+  "overrides": {
+    "body-parser": "1.20.6",
+    "fetch-socks": {
+      "undici": "7.29.0"
+    }
   }
 }
