@@ -1,8 +1,8 @@
 export const SCENARIOS = {
   ai: {
     label: 'AI 工具', noun: 'AI 工具', icon: 'AI',
-    desc: '重点检查 IP 信誉、住宅属性、浏览器一致性和自动化特征。',
-    weights: { reputation: 30, identity: 25, environment: 30, region: 5, network: 5, service: 5 },
+    desc: '重点检查地区可达性、IP 信誉、住宅属性和浏览器一致性；地区限制会优先于纯净度。',
+    weights: { reputation: 25, identity: 20, environment: 15, region: 30, network: 5, service: 5 },
   },
   browse: {
     label: '轻松上网', noun: '日常跨境浏览', icon: 'WEB',
@@ -32,7 +32,7 @@ export const DIMENSION_LABELS = {
 };
 
 /** 将场景权重与已知维度组合成估算值、缺失权重和保守区间。 */
-export function calculateScenarioScore(profile, values) {
+export function calculateScenarioScore(profile, values, { maximumScore = 100 } = {}) {
   const dimensions = Object.entries(profile.weights).map(([key, weight]) => ({
     key,
     label: DIMENSION_LABELS[key] || key,
@@ -44,11 +44,15 @@ export function calculateScenarioScore(profile, values) {
   const known = relevant.filter((item) => item.available);
   const knownWeight = known.reduce((sum, item) => sum + item.weight, 0);
   const weightedKnown = known.reduce((sum, item) => sum + item.score * item.weight / 100, 0);
-  const estimate = knownWeight ? Math.round(weightedKnown * 100 / knownWeight) : 0;
+  const rawEstimate = knownWeight ? Math.round(weightedKnown * 100 / knownWeight) : 0;
+  const estimate = Math.min(rawEstimate, maximumScore);
   const missingWeight = 100 - knownWeight;
-  const range = [Math.round(weightedKnown), Math.round(Math.min(100, weightedKnown + missingWeight))];
+  const range = [
+    Math.min(Math.round(weightedKnown), maximumScore),
+    Math.min(Math.round(Math.min(100, weightedKnown + missingWeight)), maximumScore),
+  ];
   const confidence = knownWeight >= 90 ? 'high' : knownWeight >= 60 ? 'medium' : 'low';
   const grade = estimate >= 85 ? '非常适合' : estimate >= 70 ? '适合' : estimate >= 55 ? '勉强可用' : '不推荐';
   const cls = estimate >= 75 ? 'good' : estimate >= 55 ? 'warn' : 'bad';
-  return { profile, dimensions, estimate, knownWeight, missingWeight, range, confidence, grade, cls };
+  return { profile, dimensions, estimate, knownWeight, missingWeight, range, confidence, grade, cls, maximumScore };
 }

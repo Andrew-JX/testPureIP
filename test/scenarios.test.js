@@ -29,3 +29,12 @@ test('scenario score does not treat zero-weight dimensions as missing', () => {
   assert.equal(score.missingWeight, 0);
   assert.equal(score.dimensions.find((item) => item.key === 'service').available, true);
 });
+
+test('scenario score honors a hard availability ceiling', () => {
+  const profile = { weights: { reputation: 50, region: 50 } };
+  const score = calculateScenarioScore(profile, { reputation: 100, region: 0 }, { maximumScore: 45 });
+
+  assert.equal(score.estimate, 45);
+  assert.deepEqual(score.range, [45, 45]);
+  assert.equal(score.grade, '不推荐');
+});

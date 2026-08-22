@@ -601,8 +601,48 @@ function identityScore(basic) {
   return Math.max(0, score);
 }
 
-function targetRegionScore(basic, network) {
+function getRegionalAvailability(basic, unlock) {
+  if (getPrimaryCountry(basic) !== 'CN') return null;
+
+  const restrictions = {
+    ai: {
+      label: '中国大陆出口的 AI 服务地区限制',
+      advice: 'Claude、ChatGPT、Gemini 等常用 AI 服务无法将中国大陆作为常规支持地区。即使 IP 信誉很干净，也不应把它评为适合直接使用 AI 工具；请改用服务支持地区的合规出口，并重新做解锁实测。',
+    },
+    browse: {
+      label: '中国大陆出口的跨境网站可达性限制',
+      advice: 'Google、YouTube 等常用跨境网站无法作为中国大陆出口的常规直连能力。纯净度只能说明信誉，不能代表这些网站可直接打开；请使用服务支持地区的合规出口。',
+    },
+    account: {
+      label: '中国大陆出口的海外账号服务可达性限制',
+      advice: 'Gmail、Outlook、海外社媒等常用账号服务在中国大陆出口上不应默认视为可直接使用。请使用服务支持地区的合规出口后，再评估账号登录与风控。',
+    },
+    stream: {
+      label: '中国大陆出口的国际流媒体可达性限制',
+      advice: 'Netflix、Disney+ 等国际流媒体无法将中国大陆出口视为常规直连地区。请使用目标服务支持地区的合规出口，并做实际解锁检测。',
+    },
+  }[appState.scenario];
+  if (!restrictions) return null;
+
+  // 代理模式有真实解锁结果时，可让实际成功结果覆盖地区规则；其他模式不能从浏览器跨域直连目标服务，
+  // 因而采用保守的地区可达性判断。
+  const fullyVerified = appState.scenario === 'ai'
+    ? [unlock?.claude?.status, unlock?.chatgpt?.status].every((status) => status === 'yes')
+    : appState.scenario === 'stream'
+      ? unlock?.[{ netflix: 'netflix', disney: 'disneyPlus', youtube: 'youtubePremium' }[appState.streamService]]?.status === 'yes'
+      : false;
+  if (fullyVerified) return null;
+
+  return {
+    score: 0,
+    maximumScore: 45,
+    ...restrictions,
+  };
+}
+
+function targetRegionScore(basic, network, regionalAvailability) {
   const country = getPrimaryCountry(basic);
+  if (regionalAvailability) return regionalAvailability.score;
   if (appState.scenario === 'stream') return country ? (country === appState.streamRegion ? 100 : 42) : null;
   if (appState.scenario === 'game') {
     const region = network?.regions?.find((item) => item.id === appState.gameRegion);
@@ -646,12 +686,13 @@ function selectedNetworkScore(network) {
   return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - region.loss * 5));
 }
 
-function serviceScore(unlock, network) {
+function serviceScore(unlock, network, regionalAvailability) {
   const value = (status) => ({ yes: 100, partial: 55, no: 0 }[status] ?? null);
   if (appState.scenario === 'ai' && unlock) {
     const values = [value(unlock.claude?.status), value(unlock.chatgpt?.status)].filter((item) => item != null);
     return values.length ? average(values) : null;
   }
+  if (regionalAvailability) return 0;
   if (appState.scenario === 'stream' && unlock) {
     const map = { netflix: 'netflix', disney: 'disneyPlus', youtube: 'youtubePremium' };
     return value(unlock[map[appState.streamService]]?.status);
@@ -665,15 +706,19 @@ function serviceScore(unlock, network) {
 
 function buildScenarioScore(results) {
   const profile = SCENARIOS[appState.scenario];
+  const regionalAvailability = getRegionalAvailability(results.basic, results.unlock);
   const values = {
     reputation: reputationScore(results.risk, results.dnsbl),
     identity: identityScore(results.basic),
     environment: results.agent?.score ?? null,
-    region: targetRegionScore(results.basic, results.network),
+    region: targetRegionScore(results.basic, results.network, regionalAvailability),
     network: selectedNetworkScore(results.network),
-    service: serviceScore(results.unlock, results.network),
+    service: serviceScore(results.unlock, results.network, regionalAvailability),
   };
-  return calculateScenarioScore(profile, values);
+  const score = calculateScenarioScore(profile, values, {
+    maximumScore: regionalAvailability?.maximumScore,
+  });
+  return { ...score, regionalAvailability };
 }
 
 function renderScenarioEvidence(score, results) {
@@ -713,6 +758,9 @@ function renderVerdict(score, results, reportMode = appState.mode) {
   if (results.network?.loss > 0) issues.push({ level: 'warn', label: '检测到请求失败', advice: '线路存在瞬时不稳定，建议复测并检查 Wi-Fi、代理节点或运营商线路。' });
   const region = score.dimensions.find((item) => item.key === 'region');
   if (region?.available && region.score < 55) issues.push({ level: 'bad', label: '出口与目标地区不匹配', advice: '请选择与目标服务或区服更接近的出口节点。' });
+  if (score.regionalAvailability) {
+    issues.unshift({ level: 'bad', label: score.regionalAvailability.label, advice: score.regionalAvailability.advice });
+  }
   if (score.missingWeight > 0) issues.push({ level: 'warn', label: `仍有 ${score.missingWeight}% 权重未实测`, advice: `当前可信度为${score.confidence === 'high' ? '高' : score.confidence === 'medium' ? '中' : '低'}；未测项不会按满分处理。` });
 
   const measuredDownload = getLatestSpeedResult()?.downloadMbps ?? results.network?.downloadMbps;
@@ -739,7 +787,9 @@ function renderScore(ip, score) {
   $('scoreConfidence').textContent = `可信度${score.confidence === 'high' ? '高' : score.confidence === 'medium' ? '中' : '低'} · 已测 ${score.knownWeight}%`;
   $('scoreBreakdown').innerHTML = score.dimensions.filter((item) => item.weight > 0).map((item) =>
     `<span>${esc(item.label)} ${item.available ? Math.round(item.score) : '未测'}</span>`).join('');
-  $('scoreLegend').textContent = score.missingWeight
+  $('scoreLegend').textContent = score.regionalAvailability
+    ? `已识别到地区可达性限制：总分上限为 ${score.maximumScore}，不会因纯净度较高而被误判为适合 AI 工具。`
+    : score.missingWeight
     ? `显示的是已知证据预评估；完整得分合理区间约 ${score.range[0]}–${score.range[1]}，缺失项没有按满分处理。`
     : '当前场景所需维度已完整检测，分数可直接用于比较。';
   return score.grade;
