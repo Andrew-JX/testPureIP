@@ -1,12 +1,17 @@
 import { getLatestSpeedResult, initSpeedTest, setSpeedProbes } from './speedtest.js';
 import { isPublicIp } from './ip-validation.js';
-import { SCENARIOS, calculateScenarioScore } from './scenarios.js';
+import {
+  AI_SERVICES,
+  SCENARIOS,
+  evaluateScenario,
+} from './scenarios.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 const appState = {
   scenario: 'ai', mode: 'self',
+  aiService: 'claude',
   streamService: 'netflix', streamRegion: 'US', streamQuality: '4k',
   gameRegion: 'singapore', gameStyle: 'competitive',
   networkProbes: [{ id: 'local', label: '当前节点', url: '' }],
@@ -78,14 +83,14 @@ function renderBasic(data) {
     if (s.skipped) return `<tr><th>${esc(src)}</th><td colspan="5" class="dim">${esc(s.skipped)}</td></tr>`;
     const flags = [];
     const f = s.flags || {};
-    if (f.hosting || f.datacenter) flags.push('<span class="tag bad">机房</span>');
-    if (f.proxy) flags.push('<span class="tag bad">代理</span>');
-    if (f.vpn) flags.push('<span class="tag warn">VPN</span>');
+    if (f.hosting || f.datacenter) flags.push('<span class="tag dim">机房/云网络</span>');
+    if (f.proxy) flags.push('<span class="tag dim">代理</span>');
+    if (f.vpn) flags.push('<span class="tag dim">VPN</span>');
     if (f.tor) flags.push('<span class="tag bad">Tor</span>');
     if (f.abuser) flags.push('<span class="tag bad">滥用记录</span>');
     if (f.mobile) flags.push('<span class="tag good">移动网络</span>');
     if (s.companyType === 'isp') flags.push('<span class="tag good">ISP</span>');
-    if (s.companyType === 'hosting') flags.push('<span class="tag bad">hosting</span>');
+    if (s.companyType === 'hosting') flags.push('<span class="tag dim">hosting</span>');
     const fl = s.countryCode ? flag(s.countryCode) + ' ' : '';
     return `<tr>
       <th>${esc(src)}</th>
@@ -109,7 +114,7 @@ function deriveIpType(basic) {
   const com = basic?.sources?.['ip-api.com']?.flags || {};
   const f = s.flags || {};
   if (f.tor) return { label: 'Tor 出口', cls: 'bad' };
-  if (f.hosting || f.datacenter || com.hosting || s.companyType === 'hosting') return { label: '机房 IP', cls: 'bad' };
+  if (f.hosting || f.datacenter || com.hosting || s.companyType === 'hosting') return { label: '机房 / 云网络 IP', cls: 'dim' };
   if (f.mobile || com.mobile || s.companyType === 'mobile') return { label: '移动网络 IP', cls: 'good' };
   if (s.companyType === 'isp') return { label: '住宅 IP（家庭宽带）', cls: 'good' };
   if (s.companyType === 'business') return { label: '商业 IP', cls: 'warn' };
@@ -132,8 +137,8 @@ function renderDetail(ip, basic, agent) {
   // 附加标记
   const tags = [];
   const f = s.flags || {};
-  if (f.proxy) tags.push('<span class="tag bad">代理</span>');
-  if (f.vpn) tags.push('<span class="tag warn">VPN</span>');
+  if (f.proxy) tags.push('<span class="tag dim">代理</span>');
+  if (f.vpn) tags.push('<span class="tag dim">VPN</span>');
   if (f.abuser) tags.push('<span class="tag bad">滥用记录</span>');
 
   const rtc = !hasBrowserContext
@@ -250,7 +255,7 @@ const UNLOCK_NAMES = {
 function renderUnlock(data) {
   const items = Object.entries(data).map(([key, v]) => {
     const cls = { yes: 'good', partial: 'warn', no: 'bad' }[v.status] || 'dim';
-    const label = { yes: '✓ 可用', partial: '◐ 部分', no: '✗ 不可用' }[v.status] || '? 未知';
+    const label = { yes: '✓ 入口可达', partial: '◐ 部分可达', no: '✗ 当前受限' }[v.status] || '? 未知';
     return `<div class="unlock-item">
       <div class="name">${UNLOCK_NAMES[key] || key} <span class="tag ${cls}">${label}${v.region ? ' · ' + esc(v.region) : ''}</span></div>
       <div class="note">${esc(v.note || '')}</div>
@@ -402,7 +407,7 @@ async function runNetworkStability() {
   }
 }
 
-/* ---------- AI Agent 可用性检测（客户端指纹 + IP 侧信号） ---------- */
+/* ---------- 浏览器环境检查（WebRTC + 自动化标志） ---------- */
 
 function detectChineseFont() {
   try {
@@ -450,9 +455,6 @@ async function analyzeAgent(exitIp, basic) {
   // IP 侧地理信息（来自基础信息接口）
   const ipapi = basic?.sources?.['ip-api.com'] || {};
   const ipTz = ipapi.timezone || basic?.sources?.['ipapi.is']?.timezone || '';
-  const ipapiFlags = basic?.sources?.['ipapi.is']?.flags || {};
-  const ipComFlags = ipapi.flags || {};
-
   const leakedPublic = rtc.ips.filter(isPublicIp);
   const rtcLeak = leakedPublic.some((ip) => exitIp && ip !== exitIp);
 
@@ -460,22 +462,18 @@ async function analyzeAgent(exitIp, basic) {
   const signals = [];
   const push = (label, level, penalty, detail, advice) => signals.push({ label, level, penalty, detail, advice });
 
-  // 时区 / IP 地理一致性
+  // 时区仅作排障信息。没有可靠证据表明浏览器时区不一致本身应降低网页用途得分；
+  // Claude Code 的公开逆向发现也只涉及自定义 ANTHROPIC_BASE_URL 路径，而非普通浏览器访问。
   if (ipTz && tz) {
-    const sameRegion = ipTz.split('/')[0] === tz.split('/')[0];
-    if (!sameRegion) push('时区与 IP 地理不一致', 'bad', 25, `浏览器 ${tz} vs IP ${ipTz}`,
-      '你的系统时区暴露了真实位置，和代理 IP 对不上，AI 服务会怀疑你在用代理。建议把系统 / 浏览器时区改成与 IP 同一地区。');
-    else push('时区与 IP 地理一致', 'good', 0, tz);
+    if (ipTz !== tz) push('浏览器与 IP 时区不同（仅提示）', 'dim', 0, `浏览器 ${tz} vs IP ${ipTz}`);
+    else push('浏览器与 IP 时区相同', 'good', 0, tz);
   } else {
     push('系统时区', 'dim', 0, tz);
   }
 
-  // 语言 / 中文特征（AI 服务对中国大陆环境更敏感）
-  if (/^zh-CN|zh-Hans/i.test(navigator.language)) push('首选语言为简体中文', 'warn', 12, langs,
-    '浏览器首选语言是简体中文，可能略微增加相关风控。可在浏览器设置里把英文调到语言列表最前面。');
-  else push('浏览器语言', 'good', 0, langs);
-  if (cnFonts >= 2) push('检测到多种中文字体', 'warn', 8, `${cnFonts}/4`,
-    '系统装有多种中文字体，是中国大陆环境的弱特征。影响很小，一般可忽略。');
+  // 语言和字体属于正常用户偏好，不作为风险证据。
+  push('浏览器语言（仅信息）', 'dim', 0, langs);
+  if (cnFonts >= 2) push('中文字体（仅信息）', 'dim', 0, `${cnFonts}/4`);
 
   // WebRTC 泄漏
   if (!rtc.supported) push('WebRTC 不可用/被禁用', 'good', 0, '无泄漏面');
@@ -489,18 +487,6 @@ async function analyzeAgent(exitIp, basic) {
   if (webdriver) push('navigator.webdriver = true（自动化环境）', 'bad', 20, '易被判定为 bot',
     '检测到自动化 / 无头浏览器特征，极易被判定为机器人。请用正常浏览器访问 AI 服务。');
   else push('无自动化标志', 'good', 0, 'navigator.webdriver = false');
-
-  // IP 侧风险（决定 AI 服务是否直接拒绝该出口）
-  if (ipComFlags.hosting || ipapiFlags.datacenter) push('IP 为机房/数据中心', 'bad', 28, 'AI 服务常直接拦截机房 IP',
-    '机房 IP 最容易被 AI 服务直接拦截。建议改用住宅（家庭宽带）或移动网络 IP。');
-  if (ipapiFlags.proxy || ipComFlags.proxy) push('IP 被标记为代理', 'bad', 22, '',
-    '这个 IP 已被情报库标记为代理 / 中转，风控概率高。建议更换为未被标记的住宅 IP。');
-  if (ipapiFlags.vpn) push('IP 被标记为 VPN', 'warn', 12, '',
-    '这个 IP 属于 VPN 段，部分服务会限制。若频繁触发验证码，考虑换住宅 IP。');
-  if (ipapiFlags.tor) push('IP 为 Tor 出口', 'bad', 40, '',
-    'Tor 出口几乎必被 AI 服务封禁，请勿用于登录。');
-  if (ipapiFlags.abuser) push('IP 有滥用记录', 'bad', 25, '',
-    '这个 IP 有滥用历史（可能被前一个用户滥用过），建议更换。');
 
   const totalPenalty = signals.reduce((s, x) => s + x.penalty, 0);
   const score = Math.max(0, 100 - totalPenalty);
@@ -534,8 +520,8 @@ function renderAgent(agent) {
     <div class="agent-head">
       <div class="agent-score ${verdict.cls}">${score}<span>/100</span></div>
       <div>
-        <div class="agent-grade ${verdict.cls}">AI Agent ${verdict.grade}</div>
-        <div class="dim" style="font-size:12px">综合浏览器指纹 + IP 侧信号，评估 Claude / ChatGPT 等 AI 服务是否会拦截或风控此环境</div>
+        <div class="agent-grade ${verdict.cls}">浏览器环境 ${verdict.grade}</div>
+        <div class="dim" style="font-size:12px">只检查当前浏览器的 WebRTC 泄漏与自动化标志；不等同于 Claude Code 进程检查，也不预测官方封号结果</div>
       </div>
     </div>
     <div class="signal-list">${rows.join('')}</div>`;
@@ -543,197 +529,40 @@ function renderAgent(agent) {
 
 /* ---------- 场景化证据、评分与结论 ---------- */
 
-function getPrimaryCountry(basic) {
-  const sources = basic?.sources || {};
-  const source = [sources['ipapi.is'], sources['ip-api.com'], sources['ipwho.is'], sources['ipinfo Lite']]
-    .find((item) => item && !item.error && item.countryCode) || {};
-  return String(source.countryCode || '').toUpperCase();
-}
-
-function getCountryAgreement(basic) {
-  const countries = Object.values(basic?.sources || {})
-    .filter((source) => source && !source.error && source.countryCode)
-    .map((source) => String(source.countryCode).toUpperCase());
-  if (!countries.length) return null;
-  const counts = countries.reduce((map, country) => map.set(country, (map.get(country) || 0) + 1), new Map());
-  return Math.round(Math.max(...counts.values()) / countries.length * 100);
-}
-
-function dnsblCleanScore(dnsbl) {
-  if (!dnsbl?.supported) return null;
-  if (dnsbl.listedCount >= 2) return 10;
-  if (dnsbl.listedCount === 1) return 45;
-  const checked = dnsbl.checkedCount ?? 0;
-  return checked >= 5 ? 100 : checked >= 3 ? 88 : checked >= 1 ? 75 : 55;
-}
-
-function reputationScore(risk, dnsbl) {
-  const scores = [risk?.proxycheck?.score, risk?.abuseipdb?.score, risk?.ipqs?.score, risk?.ipapiis?.score]
-    .filter((value) => typeof value === 'number');
-  let clean = scores.length ? 100 - average(scores) : null;
-  const idb = risk?.internetdb;
-  if (clean != null && idb && !idb.error && !idb.clean) {
-    if (proxyPorts(idb.ports || []) || /proxy|vpn/i.test((idb.tags || []).join())) clean -= 35;
-    else if (idb.vulns?.length) clean -= 15;
-  }
-  const blacklist = dnsblCleanScore(dnsbl);
-  if (clean == null) return blacklist;
-  if (blacklist == null) return Math.max(0, clean);
-  return Math.max(0, clean * 0.75 + blacklist * 0.25);
-}
-
-function identityScore(basic) {
-  if (!basic?.sources) return null;
-  let score = 100;
-  const rawSource = basic.sources['ipapi.is'];
-  const rawCommon = basic.sources['ip-api.com'];
-  const sourceAvailable = rawSource && !rawSource.error && !rawSource.skipped;
-  const commonAvailable = rawCommon && !rawCommon.error && !rawCommon.skipped;
-  if (!sourceAvailable && !commonAvailable) return null;
-  const source = sourceAvailable ? rawSource : {};
-  const flags = source.flags || {};
-  const common = commonAvailable ? rawCommon.flags || {} : {};
-  if (common.hosting || flags.datacenter || source.companyType === 'hosting') score -= 45;
-  if (common.proxy || flags.proxy) score -= 30;
-  if (flags.vpn) score -= 15;
-  if (flags.tor) score -= 60;
-  if (flags.mobile || source.companyType === 'isp') score = Math.min(100, score + 10);
-  return Math.max(0, score);
-}
-
-function getRegionalAvailability(basic, unlock) {
-  if (getPrimaryCountry(basic) !== 'CN') return null;
-
-  const restrictions = {
-    ai: {
-      label: '中国大陆出口的 AI 服务地区限制',
-      advice: 'Claude、ChatGPT、Gemini 等常用 AI 服务无法将中国大陆作为常规支持地区。即使 IP 信誉很干净，也不应把它评为适合直接使用 AI 工具；请改用服务支持地区的合规出口，并重新做解锁实测。',
-    },
-    browse: {
-      label: '中国大陆出口的跨境网站可达性限制',
-      advice: 'Google、YouTube 等常用跨境网站无法作为中国大陆出口的常规直连能力。纯净度只能说明信誉，不能代表这些网站可直接打开；请使用服务支持地区的合规出口。',
-    },
-    account: {
-      label: '中国大陆出口的海外账号服务可达性限制',
-      advice: 'Gmail、Outlook、海外社媒等常用账号服务在中国大陆出口上不应默认视为可直接使用。请使用服务支持地区的合规出口后，再评估账号登录与风控。',
-    },
-    stream: {
-      label: '中国大陆出口的国际流媒体可达性限制',
-      advice: 'Netflix、Disney+ 等国际流媒体无法将中国大陆出口视为常规直连地区。请使用目标服务支持地区的合规出口，并做实际解锁检测。',
-    },
-  }[appState.scenario];
-  if (!restrictions) return null;
-
-  // 代理模式有真实解锁结果时，可让实际成功结果覆盖地区规则；其他模式不能从浏览器跨域直连目标服务，
-  // 因而采用保守的地区可达性判断。
-  const fullyVerified = appState.scenario === 'ai'
-    ? [unlock?.claude?.status, unlock?.chatgpt?.status].every((status) => status === 'yes')
-    : appState.scenario === 'stream'
-      ? unlock?.[{ netflix: 'netflix', disney: 'disneyPlus', youtube: 'youtubePremium' }[appState.streamService]]?.status === 'yes'
-      : false;
-  if (fullyVerified) return null;
-
-  return {
-    score: 0,
-    maximumScore: 45,
-    ...restrictions,
-  };
-}
-
-function targetRegionScore(basic, network, regionalAvailability) {
-  const country = getPrimaryCountry(basic);
-  if (regionalAvailability) return regionalAvailability.score;
-  if (appState.scenario === 'stream') return country ? (country === appState.streamRegion ? 100 : 42) : null;
-  if (appState.scenario === 'game') {
-    const region = network?.regions?.find((item) => item.id === appState.gameRegion);
-    return region?.available ? Math.max(25, region.score) : null;
-  }
-  const agreement = getCountryAgreement(basic);
-  return agreement == null ? null : Math.max(60, agreement);
-}
-
-function selectedNetworkScore(network) {
-  if (!network) return null;
-  const publicSpeed = getLatestSpeedResult();
-  if (appState.scenario === 'stream') {
-    const required = { '720p': 3, '1080p': 5, '4k': 15 }[appState.streamQuality];
-    const measuredDownload = publicSpeed?.downloadMbps ?? network.downloadMbps;
-    const throughput = measuredDownload == null ? null : Math.min(100, measuredDownload / required * 100);
-    return throughput == null ? network.score : Math.round(network.score * 0.7 + throughput * 0.3);
-  }
-  if (appState.scenario !== 'game') {
-    if (!publicSpeed?.score) return network.score;
-    const speedWeight = appState.scenario === 'browse' ? 0.35 : 0.18;
-    return Math.round(network.score * (1 - speedWeight) + publicSpeed.score * speedWeight);
-  }
-  const region = network.regions?.find((item) => item.id === appState.gameRegion);
-  if (!region?.available) return network.score;
-  if (appState.gameStyle === 'competitive') {
-    const latencyPenalty = Math.max(0, region.avg - 35) * 0.65;
-    const jitterPenalty = Math.max(0, region.jitter - 8) * 1.8;
-    const loadPenalty = publicSpeed ? Math.max(0, publicSpeed.bufferbloat - 30) * 0.12 : 0;
-    return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - loadPenalty - region.loss * 8));
-  }
-  if (appState.gameStyle === 'cloud') {
-    const latencyPenalty = Math.max(0, region.avg - 45) * 0.7;
-    const loadedPenalty = Math.max(0, network.loadedAvg - 80) * 0.25;
-    const measuredDownload = publicSpeed?.downloadMbps ?? network.downloadMbps;
-    const bandwidthPenalty = measuredDownload == null ? 15 : Math.max(0, 25 - measuredDownload) * 1.2;
-    return Math.max(0, Math.round(100 - latencyPenalty - loadedPenalty - bandwidthPenalty - region.loss * 6));
-  }
-  const latencyPenalty = Math.max(0, region.avg - 90) * 0.35;
-  const jitterPenalty = Math.max(0, region.jitter - 20);
-  return Math.max(0, Math.round(100 - latencyPenalty - jitterPenalty - region.loss * 5));
-}
-
-function serviceScore(unlock, network, regionalAvailability) {
-  const value = (status) => ({ yes: 100, partial: 55, no: 0 }[status] ?? null);
-  if (appState.scenario === 'ai' && unlock) {
-    const values = [value(unlock.claude?.status), value(unlock.chatgpt?.status)].filter((item) => item != null);
-    return values.length ? average(values) : null;
-  }
-  if (regionalAvailability) return 0;
-  if (appState.scenario === 'stream' && unlock) {
-    const map = { netflix: 'netflix', disney: 'disneyPlus', youtube: 'youtubePremium' };
-    return value(unlock[map[appState.streamService]]?.status);
-  }
-  if (appState.scenario === 'game') {
-    const region = network?.regions?.find((item) => item.id === appState.gameRegion);
-    return region?.available ? 100 : null;
-  }
-  return null;
-}
-
 function buildScenarioScore(results) {
-  const profile = SCENARIOS[appState.scenario];
-  const regionalAvailability = getRegionalAvailability(results.basic, results.unlock);
-  const values = {
-    reputation: reputationScore(results.risk, results.dnsbl),
-    identity: identityScore(results.basic),
-    environment: results.agent?.score ?? null,
-    region: targetRegionScore(results.basic, results.network, regionalAvailability),
-    network: selectedNetworkScore(results.network),
-    service: serviceScore(results.unlock, results.network, regionalAvailability),
-  };
-  const score = calculateScenarioScore(profile, values, {
-    maximumScore: regionalAvailability?.maximumScore,
+  return evaluateScenario(appState.scenario, results, {
+    aiService: appState.aiService,
+    streamService: appState.streamService,
+    streamRegion: appState.streamRegion,
+    streamQuality: appState.streamQuality,
+    gameRegion: appState.gameRegion,
+    gameStyle: appState.gameStyle,
+    publicSpeed: getLatestSpeedResult(),
   });
-  return { ...score, regionalAvailability };
 }
 
 function renderScenarioEvidence(score, results) {
   $('scenarioEvidenceTitle').childNodes[0].nodeValue = `${score.profile.label}关键证据 `;
-  $('scenarioEvidenceDesc').textContent = score.profile.desc;
+  const target = appState.scenario === 'ai' ? `当前目标：${AI_SERVICES[appState.aiService].label}。` : '';
+  $('scenarioEvidenceDesc').textContent = `${score.profile.desc}${target}`;
+  const strengthText = { hard: '可触发门槛', strong: '强证据', medium: '中等证据', weak: '弱信号', none: '仅信息' };
   const rows = score.dimensions.filter((item) => item.weight > 0).sort((a, b) => b.weight - a.weight).map((item) => {
     const cls = !item.available ? 'dim' : item.score >= 75 ? 'good' : item.score >= 55 ? 'warn' : 'bad';
     const value = item.available ? Math.round(item.score) : '未测';
     return `<div class="evidence-row ${cls}">
-      <div><b>${esc(item.label)}</b><small>权重 ${item.weight}%</small></div>
+      <div><b>${esc(item.label)}</b><small>权重 ${item.weight}% · ${esc(strengthText[item.strength] || '证据')}</small></div>
       <div class="evidence-track"><i style="width:${item.available ? Math.max(3, item.score) : 0}%"></i></div>
       <strong>${value}</strong>
     </div>`;
   }).join('');
-  const importantSignals = (results.agent?.signals || []).filter((item) => item.level === 'bad' || item.level === 'warn').slice(0, 4);
+  const identitySignals = (score.identityEvidence?.observations || []).map((item) => ({
+    label: `${item.label}（弱上下文${item.penalty ? `，本场景 -${item.penalty}` : '，本场景不扣分'}）`,
+    level: item.penalty ? 'warn' : 'dim',
+  }));
+  const importantSignals = [
+    ...identitySignals,
+    ...(results.agent?.signals || []).filter((item) => item.level === 'bad' || item.level === 'warn'),
+  ].slice(0, 6);
   const signals = importantSignals.length ? `<div class="scenario-signals">${importantSignals.map((item) =>
     `<span class="tag ${item.level}">${esc(item.label)}</span>`).join('')}</div>` : '';
   $('agentBody').innerHTML = `<div class="evidence-list">${rows}</div>${signals}`;
@@ -760,6 +589,13 @@ function renderVerdict(score, results, reportMode = appState.mode) {
   if (region?.available && region.score < 55) issues.push({ level: 'bad', label: '出口与目标地区不匹配', advice: '请选择与目标服务或区服更接近的出口节点。' });
   if (score.regionalAvailability) {
     issues.unshift({ level: 'bad', label: score.regionalAvailability.label, advice: score.regionalAvailability.advice });
+  }
+  if (score.identityEvidence?.observations.some((item) => item.penalty > 0)) {
+    issues.push({
+      level: 'warn',
+      label: '出口存在代理、机房或共享属性（弱上下文）',
+      advice: '这不是封号或不可用结论；请与地区资格、真实服务结果和已确认滥用记录一起判断，重要账号尽量保持受管理且稳定的出口。',
+    });
   }
   if (score.missingWeight > 0) issues.push({ level: 'warn', label: `仍有 ${score.missingWeight}% 权重未实测`, advice: `当前可信度为${score.confidence === 'high' ? '高' : score.confidence === 'medium' ? '中' : '低'}；未测项不会按满分处理。` });
 
@@ -788,9 +624,9 @@ function renderScore(ip, score) {
   $('scoreBreakdown').innerHTML = score.dimensions.filter((item) => item.weight > 0).map((item) =>
     `<span>${esc(item.label)} ${item.available ? Math.round(item.score) : '未测'}</span>`).join('');
   $('scoreLegend').textContent = score.regionalAvailability
-    ? `已识别到地区可达性限制：总分上限为 ${score.maximumScore}，不会因纯净度较高而被误判为适合 AI 工具。`
+    ? `已识别到地区可达性限制：总分上限为 ${score.maximumScore}，不会因纯净度较高而被误判为适合${score.profile.noun}。`
     : score.missingWeight
-    ? `显示的是已知证据预评估；完整得分合理区间约 ${score.range[0]}–${score.range[1]}，缺失项没有按满分处理。`
+    ? `显示的是已知证据预评估；缺失项按中性值估算，完整得分合理区间约 ${score.range[0]}–${score.range[1]}。`
     : '当前场景所需维度已完整检测，分数可直接用于比较。';
   return score.grade;
 }
@@ -840,6 +676,17 @@ function showInputError(message = '') {
 
 function renderScenarioOptions() {
   const panel = $('scenarioOptions');
+  if (appState.scenario === 'ai') {
+    panel.classList.remove('hidden');
+    panel.innerHTML = `<label>目标服务<select id="aiService">${Object.entries(AI_SERVICES)
+      .map(([key, service]) => `<option value="${key}">${esc(service.label)}</option>`).join('')}</select></label>`;
+    $('aiService').value = appState.aiService;
+    $('aiService').addEventListener('change', (event) => {
+      appState.aiService = event.target.value;
+      rerenderLastReport();
+    });
+    return;
+  }
   if (appState.scenario === 'stream') {
     panel.classList.remove('hidden');
     panel.innerHTML = `

@@ -196,7 +196,7 @@ header .sub strong { color: var(--text); }
 .agent-grade.good { color: var(--good); }
 .agent-grade.warn { color: var(--warn); }
 .agent-grade.bad { color: var(--bad); }
-/* AI Agent 信号：单列清爽布局，每项一行 + 建议独立成行 */
+/* 浏览器环境信号：单列清爽布局，每项一行 + 建议独立成行 */
 .signal-list { display: flex; flex-direction: column; }
 .signal { padding: 9px 0; border-bottom: 1px solid var(--card-border); font-size: 13px; }
 .signal:last-child { border-bottom: none; }
@@ -392,7 +392,7 @@ footer .dim { font-size: 12px; }
 .issue b { display: block; margin-bottom: 3px; font-size: 13.5px; }
 .issue span { color: var(--dim); font-size: 12.5px; line-height: 1.5; }
 
-/* AI Agent 信号建议 */
+/* 浏览器环境信号建议 */
 .signal-advice {
   flex-basis: 100%;
   color: var(--dim);

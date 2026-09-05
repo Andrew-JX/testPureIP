@@ -5,23 +5,40 @@ import { getText, getJson } from '../http.js';
  * 返回值 status: 'yes' | 'no' | 'partial' | 'unknown'
  */
 
-async function claude(dispatcher) {
-  const r = await getText('https://claude.ai/', { dispatcher, redirect: 'follow', timeout: 15_000 });
-  if (r.status === 0) return { status: 'unknown', note: r.error };
-  if (r.url.includes('app-unavailable') || /unavailable-in-region/i.test(r.text)) {
+export function classifyClaudeReachability(web, api) {
+  if (web.url.includes('app-unavailable') || /unavailable-in-region/i.test(web.text)) {
     return { status: 'no', note: '地区不可用（app-unavailable）' };
   }
-  if (r.status === 403) {
-    return { status: 'no', note: 'HTTP 403 — 被 Cloudflare 拦截，IP 信誉差的典型表现' };
+  if (api.status === 403 || web.status === 403) {
+    return { status: 'no', note: 'HTTP 403 — 当前出口请求被拒（原因可能是地区、登录状态或服务防护策略）' };
   }
-  if (r.status === 200) {
-    // 页面含验证码挑战说明 IP 被重点盯防
-    if (/cf-challenge|turnstile|Just a moment/i.test(r.text)) {
-      return { status: 'partial', note: '可访问但触发人机验证（IP 信誉一般）' };
-    }
-    return { status: 'yes', note: '正常访问' };
+  const webOk = web.status === 200;
+  // 官方 API 在无凭据探测时通常返回 4xx；只要不是 403/超时，就证明网络路径已到达服务。
+  const apiReachable = api.status > 0 && api.status < 500;
+  if (webOk && /cf-challenge|turnstile|Just a moment/i.test(web.text)) {
+    return { status: 'partial', note: '网页可达但出现人机验证；这不能单独归因于 IP 信誉' };
   }
-  return { status: 'unknown', note: `HTTP ${r.status}` };
+  if (webOk && apiReachable) {
+    return { status: 'yes', note: 'Claude 网页与官方 API 入口均可达（API 未携带凭据）' };
+  }
+  if (webOk || apiReachable) {
+    const missing = webOk ? '官方 API 入口未确认' : 'Claude 网页未确认';
+    return { status: 'partial', note: missing };
+  }
+  return { status: 'unknown', note: web.error || api.error || `网页 HTTP ${web.status} / API HTTP ${api.status}` };
+}
+
+async function claude(dispatcher) {
+  const [web, api] = await Promise.all([
+    getText('https://claude.ai/', { dispatcher, redirect: 'follow', timeout: 15_000 }),
+    getText('https://api.anthropic.com/v1/models', {
+      dispatcher,
+      redirect: 'follow',
+      timeout: 15_000,
+      headers: { 'anthropic-version': '2023-06-01' },
+    }),
+  ]);
+  return classifyClaudeReachability(web, api);
 }
 
 async function chatgpt(dispatcher) {
@@ -37,7 +54,7 @@ async function chatgpt(dispatcher) {
 
   if (pageOk && !apiBlocked) return { status: 'yes', region: loc, note: '网页与 API 均可用' };
   if (pageOk && apiBlocked) return { status: 'partial', region: loc, note: '网页可用，API 受限' };
-  if (page.status === 403) return { status: 'no', region: loc, note: 'HTTP 403 — IP 被拦截' };
+  if (page.status === 403) return { status: 'no', region: loc, note: 'HTTP 403 — 当前出口请求被拒' };
   return { status: 'unknown', region: loc, note: `网页 HTTP ${page.status}` };
 }
 
