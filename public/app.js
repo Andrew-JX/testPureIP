@@ -1,5 +1,6 @@
 import { getLatestSpeedResult, initSpeedTest, setSpeedProbes } from './speedtest.js';
 import { isPublicIp } from './ip-validation.js';
+import { setExpanded, setVisible, setupDetailsMotion } from './motion.js';
 import {
   AI_SERVICES,
   SCENARIOS,
@@ -610,7 +611,7 @@ function renderVerdict(score, results, reportMode = appState.mode) {
     `<li class="issue ${item.level}"><b>${esc(item.label)}</b><span>${esc(item.advice)}</span></li>`).join('')
     : '<li class="issue good"><b>没有发现明显问题</b><span>当前已测指标适合这一使用场景。</span></li>';
   $('verdictBody').innerHTML = `<div class="verdict-overall ${score.cls}">${esc(overall)}</div><div class="verdict-sub dim">最值得关注的事项：</div><ul class="issue-list">${issueHtml}</ul>`;
-  $('card-verdict').classList.remove('hidden');
+  setVisible($('card-verdict'), true);
 }
 
 function renderScore(ip, score) {
@@ -671,15 +672,15 @@ function validManualIp(value) {
 
 function showInputError(message = '') {
   $('inputError').textContent = message;
-  $('inputError').classList.toggle('hidden', !message);
+  setVisible($('inputError'), Boolean(message));
 }
 
 function renderScenarioOptions() {
   const panel = $('scenarioOptions');
   if (appState.scenario === 'ai') {
-    panel.classList.remove('hidden');
     panel.innerHTML = `<label>目标服务<select id="aiService">${Object.entries(AI_SERVICES)
       .map(([key, service]) => `<option value="${key}">${esc(service.label)}</option>`).join('')}</select></label>`;
+    setExpanded(panel, true);
     $('aiService').value = appState.aiService;
     $('aiService').addEventListener('change', (event) => {
       appState.aiService = event.target.value;
@@ -688,11 +689,11 @@ function renderScenarioOptions() {
     return;
   }
   if (appState.scenario === 'stream') {
-    panel.classList.remove('hidden');
     panel.innerHTML = `
       <label>服务<select id="streamService"><option value="netflix">Netflix</option><option value="disney">Disney+</option><option value="youtube">YouTube Premium</option></select></label>
       <label>目标地区<select id="streamRegion"><option value="US">美国</option><option value="JP">日本</option><option value="SG">新加坡</option><option value="GB">英国</option></select></label>
       <label>目标画质<select id="streamQuality"><option value="720p">720p</option><option value="1080p">1080p</option><option value="4k">4K</option></select></label>`;
+    setExpanded(panel, true);
     $('streamService').value = appState.streamService;
     $('streamRegion').value = appState.streamRegion;
     $('streamQuality').value = appState.streamQuality;
@@ -703,20 +704,19 @@ function renderScenarioOptions() {
     return;
   }
   if (appState.scenario === 'game') {
-    panel.classList.remove('hidden');
     const regionOptions = appState.networkProbes.map((probe) => `<option value="${esc(probe.id)}">${esc(probe.label)}</option>`).join('');
     if (!appState.networkProbes.some((probe) => probe.id === appState.gameRegion)) appState.gameRegion = appState.networkProbes[0]?.id || 'local';
     panel.innerHTML = `
       <label>目标区服<select id="gameRegion">${regionOptions}</select></label>
       <label>游戏类型<select id="gameStyle"><option value="competitive">竞技游戏</option><option value="casual">休闲游戏</option><option value="cloud">云游戏</option></select></label>`;
+    setExpanded(panel, true);
     $('gameRegion').value = appState.gameRegion;
     $('gameStyle').value = appState.gameStyle;
     $('gameRegion').addEventListener('change', (event) => { appState.gameRegion = event.target.value; rerenderLastReport(); });
     $('gameStyle').addEventListener('change', (event) => { appState.gameStyle = event.target.value; rerenderLastReport(); });
     return;
   }
-  panel.classList.add('hidden');
-  panel.innerHTML = '';
+  setExpanded(panel, false, { onHidden: () => { panel.innerHTML = ''; } });
 }
 
 function setScenario(scenario) {
@@ -731,14 +731,14 @@ function setMode(mode) {
   if (!['self', 'manual'].includes(mode)) return;
   appState.mode = mode;
   document.querySelectorAll('#modeSwitch button').forEach((button) => button.classList.toggle('active', button.dataset.mode === mode));
-  $('ipInput').classList.toggle('hidden', mode !== 'manual');
+  setVisible($('ipInput'), mode === 'manual');
   $('run').textContent = mode === 'manual' ? '检测这个 IP' : '检测当前网络';
   $('modeHint').textContent = mode === 'manual'
     ? '只评估指定 IP 的信誉、类型和地区；浏览器环境与网络质量会标记为未实测'
     : '将检测当前出口 IP、浏览器环境、负载延迟与区域线路';
   showInputError();
   lastReport = null;
-  $('report').classList.add('hidden');
+  setVisible($('report'), false);
 }
 
 function rerenderLastReport() {
@@ -763,9 +763,9 @@ async function run(proxy) {
   running = true;
   $('run').disabled = true;
   $('runProxy').disabled = true;
-  $('report').classList.remove('hidden');
-  $('card-verdict').classList.add('hidden');
-  $('card-unlock').classList.toggle('hidden', !useProxy);
+  setVisible($('report'), true);
+  setVisible($('card-verdict'), false);
+  setVisible($('card-unlock'), useProxy);
   const stages = ['detail', 'agent', 'network', 'basic', 'risk', 'dnsbl', ...(useProxy ? ['unlock'] : [])];
   stages.forEach((n) => setStatus(n, 'loading'));
   $('scoreNum').textContent = '--';
@@ -837,7 +837,7 @@ async function run(proxy) {
     });
   } catch (e) {
     lastReport = null;
-    $('card-verdict').classList.add('hidden');
+    setVisible($('card-verdict'), false);
     $('scoreNum').textContent = '--';
     $('scoreGrade').textContent = '检测失败';
     $('scoreIp').textContent = e.message;
@@ -851,8 +851,10 @@ async function run(proxy) {
 
 function setProductView(view) {
   const speed = view === 'speed';
-  $('assessmentView').classList.toggle('hidden', speed);
-  $('speedView').classList.toggle('hidden', !speed);
+  const leaving = speed ? $('assessmentView') : $('speedView');
+  const entering = speed ? $('speedView') : $('assessmentView');
+  setVisible(leaving, false);
+  window.setTimeout(() => setVisible(entering, true), 235);
   document.querySelectorAll('.product-switch button').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
   document.querySelector('header .badge').textContent = speed ? '公网速度与区域链路' : '场景化网络体检';
   $('headerSub').innerHTML = speed
@@ -873,8 +875,9 @@ $('runProxy').addEventListener('click', () => run($('proxy').value));
 $('proxy').addEventListener('keydown', (e) => { if (e.key === 'Enter') run($('proxy').value); });
 $('toggleAdv').addEventListener('click', () => {
   const panel = $('advPanel');
-  const open = panel.classList.toggle('hidden');
-  $('toggleAdv').textContent = (open ? '▸' : '▾') + ' 高级：检测其他地区 IP（填代理）';
+  const willOpen = panel.classList.contains('hidden');
+  setExpanded(panel, willOpen);
+  $('toggleAdv').setAttribute('aria-expanded', String(willOpen));
 });
 $('clearHistory').addEventListener('click', () => { localStorage.removeItem(HISTORY_KEY); renderHistory(); });
 
@@ -896,5 +899,6 @@ fetch('/api/config').then((r) => r.json()).then(({ keys, proxyMode, networkProbe
 }).catch(() => {});
 document.addEventListener('pureip:speed-result', () => rerenderLastReport());
 initSpeedTest();
+document.querySelectorAll('details.technical-details, details.history-details').forEach(setupDetailsMotion);
 renderScenarioOptions();
 renderHistory();

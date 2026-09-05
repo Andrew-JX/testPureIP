@@ -5,11 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PureIP · 你的 IP 适合做什么？</title>
   <meta name="description" content="按 AI 工具、轻松上网、账号邮箱、看剧和游戏场景，评估当前网络或指定 IP 的适用度。" />
-  <link rel="stylesheet" href="style.css?v=20260822-3" />
+  <link rel="stylesheet" href="style.css?v=20260905-2" />
 </head>
 <body>
   <header>
-    <div class="brand-line"><h1>PureIP <span class="badge">IP 可用性评估</span></h1></div>
+    <div class="header-row">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div class="brand-line"><h1>PureIP <span class="badge">IP 可用性评估</span></h1></div>
+      </div>
+      <div class="header-signals" aria-label="产品特性">
+        <span class="signal-live"><i></i>场景化评估</span>
+        <span>多源核验</span>
+      </div>
+    </div>
     <div class="sub" id="headerSub">先看能不能用，再看它<strong>适合拿来做什么</strong></div>
     <nav class="product-switch" aria-label="功能切换">
       <button class="active" data-view="assessment">IP 场景评估</button>
@@ -20,8 +29,15 @@
   <div id="assessmentView">
   <section class="control card control-card">
     <div class="control-intro">
-      <div><span class="eyebrow">QUICK CHECK</span><h2>这条 IP 适合做什么？</h2></div>
-      <span class="control-time">约 10–30 秒</span>
+      <div>
+        <span class="eyebrow"><i></i>QUICK CHECK</span>
+        <h2>这条 IP 适合做什么？</h2>
+        <p>选择你关心的用途，得到对应场景的结论、风险与建议。</p>
+      </div>
+      <div class="control-time" aria-label="检测说明">
+        <strong>10–30 秒</strong>
+        <span>按需读取公开网络信号</span>
+      </div>
     </div>
     <div class="control-step"><span>1</span><b>选择场景</b></div>
     <div class="scenario-picker" id="scenarioPicker">
@@ -48,7 +64,7 @@
     <div id="inputError" class="input-error hidden"></div>
     <div id="modeHint" class="control-hint block">将检测当前出口 IP、浏览器环境和网络质量</div>
 
-    <div class="advanced-toggle"><button id="toggleAdv" class="link-btn">▸ 高级：检测其他地区 IP（填代理）</button></div>
+    <div class="advanced-toggle"><button id="toggleAdv" class="link-btn" aria-expanded="false"><span class="disclosure-arrow" aria-hidden="true">▸</span>高级：检测其他地区 IP（填代理）</button></div>
     <div id="advPanel" class="advanced hidden">
       <input id="proxy" type="text"
         placeholder="socks5://127.0.0.1:7890 或 http://user:pass@host:port" />

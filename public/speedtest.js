@@ -1,4 +1,5 @@
 import SpeedTest from '/vendor/cloudflare-speedtest.js';
+import { setVisible } from './motion.js';
 
 const HISTORY_KEY = 'pureip_speed_history_v1';
 const MAX_HISTORY = 10;
@@ -91,7 +92,7 @@ function renderHistory() {
 
 function setControls(running) {
   $('startSpeedTest').disabled = running;
-  $('cancelSpeedTest').classList.toggle('hidden', !running);
+  setVisible($('cancelSpeedTest'), running);
   document.querySelectorAll('[data-speed-mode]').forEach((button) => { button.disabled = running; });
 }
 
@@ -149,7 +150,7 @@ function resetDashboard() {
   $('speedLiveValue').textContent = '0.0';
   $('speedLiveUnit').textContent = 'Mbps';
   $('speedLiveChart').innerHTML = '<span>正在初始化测速节点…</span>';
-  $('speedVerdictCard').classList.add('hidden');
+  setVisible($('speedVerdictCard'), false);
   $('speedRegions').innerHTML = '<span class="dim">正在预热区域节点…</span>';
   $('speedStatus').textContent = '正在准备';
   updateProgress(0.02, '准备节点', '测速期间请保持当前页面在前台，并暂停大型下载或上传。');
@@ -271,7 +272,7 @@ function renderVerdict(result) {
     <i><em style="width:${item.score}%"></em></i>
     <small>${escapeHtml(item.detail)}</small>
   </article>`).join('');
-  $('speedVerdictCard').classList.remove('hidden');
+  setVisible($('speedVerdictCard'), true);
   return quality;
 }
 

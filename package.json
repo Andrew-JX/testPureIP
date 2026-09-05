@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "check:syntax": "node --check server.js && node --check src/http.js && node --check src/proxy.js && node --check src/routes/risk.js && node --check src/checks/basic.js && node --check src/checks/risk.js && node --check src/checks/dnsbl.js && node --check src/checks/unlock.js && node --check public/app.js && node --check public/ip-validation.js && node --check public/scenarios.js && node --check public/speedtest.js",
+    "check:syntax": "node --check server.js && node --check src/http.js && node --check src/proxy.js && node --check src/routes/risk.js && node --check src/checks/basic.js && node --check src/checks/risk.js && node --check src/checks/dnsbl.js && node --check src/checks/unlock.js && node --check public/app.js && node --check public/ip-validation.js && node --check public/motion.js && node --check public/scenarios.js && node --check public/speedtest.js",
     "check": "npm run check:syntax && npm test"
   },
   "dependencies": {
